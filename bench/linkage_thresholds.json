@@ -1,0 +1,28 @@
+{
+  "20000": {
+    "min": {
+      "blocking.pair_completeness": 0.98,
+      "blocking.reduction_ratio": 0.999,
+      "linkage.f1": 0.95,
+      "linkage.bcubed_f1": 0.95
+    },
+    "max": {
+      "em_recovery.training_blocks_max_abs_error": 0.03,
+      "linkage.ece": 0.02,
+      "link_seconds": 120
+    }
+  },
+  "200000": {
+    "min": {
+      "blocking.pair_completeness": 0.98,
+      "blocking.reduction_ratio": 0.999,
+      "linkage.f1": 0.95,
+      "linkage.bcubed_f1": 0.95
+    },
+    "max": {
+      "em_recovery.training_blocks_max_abs_error": 0.03,
+      "linkage.ece": 0.02,
+      "link_seconds": 900
+    }
+  }
+}

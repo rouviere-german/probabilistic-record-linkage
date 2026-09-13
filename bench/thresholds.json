@@ -1,0 +1,8 @@
+{
+  "redact_text_1kb": {"p95_us": 5000},
+  "rate_limiter_check": {"p95_us": 50},
+  "drift_check_10k_vs_10k": {"p95_us": 40000},
+  "em_fit_500k_pairs_4_inits": {"p95_us": 2000000},
+  "minhash_signatures_10k_names": {"p95_us": 2000000},
+  "jaro_winkler_100k_pairs": {"p95_us": 1000000}
+}

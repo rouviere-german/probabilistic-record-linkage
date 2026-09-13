@@ -1,0 +1,14 @@
+{
+  "min": {
+    "corruption_sweep.1.f1": 0.95,
+    "over_merge_guard.max_real_entities_committed_without_guard": 3,
+    "drift.shifted_3x_psi": 0.2
+  },
+  "max": {
+    "over_merge_guard.max_real_entities_committed_with_guard": 2,
+    "drift.same_psi": 0.2,
+    "privacy.hardened.f1_drop_pp": 3.0,
+    "privacy.hardened.worst_attack_rate": 0.15,
+    "privacy.hardened_year_month.worst_attack_rate": 0.05
+  }
+}
