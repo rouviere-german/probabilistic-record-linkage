@@ -1,0 +1,45 @@
+# Local stack. Only locally built images; nothing is pulled at runtime besides the pinned bases.
+#
+# Before `docker compose up --build`:
+#   mkdir -p secrets && python -c "import secrets; print(secrets.token_hex(32))" > secrets/pprl.key
+#   chmod 600 secrets/pprl.key
+# and export APP_JWT_SECRET / APP_ID_HASH_KEY (at least 32 characters each) in your shell or .env.
+services:
+  app:
+    build:
+      context: .
+    image: probabilistic-record-linkage:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENVIRONMENT: prod
+      APP_LOG_LEVEL: INFO
+      APP_DATA_DIR: /data
+      # Comma-separated SHA-256 digests of operator keys (protects /metrics).
+      APP_API_KEY_SHA256: ${APP_API_KEY_SHA256:-}
+      # Scoped JWTs are verified with this secret; without it every /v1 route answers 401.
+      APP_JWT_SECRET: ${APP_JWT_SECRET:-}
+      APP_ID_HASH_KEY: ${APP_ID_HASH_KEY:-}
+      APP_PPRL_KEY_FILE: /run/secrets/pprl_key
+    secrets:
+      - pprl_key
+    volumes:
+      - linkage-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2.0
+    restart: unless-stopped
+
+secrets:
+  pprl_key:
+    file: ./secrets/pprl.key
+
+volumes:
+  linkage-data: {}
