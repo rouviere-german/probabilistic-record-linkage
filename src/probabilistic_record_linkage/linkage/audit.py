@@ -2,11 +2,22 @@
 
 Every entry stores the SHA-256 of the previous entry, and its own hash covers the canonical JSON of
 all its fields (sequence number, time, event, actor, data, previous hash). Editing, deleting,
-reordering or re-encoding an entry breaks verification. Truncating the tail is only detectable
-against a head hash kept elsewhere (``verify_file(path, expect_head=...)``); the service reports
-the head after every decision so it can be anchored. Data is redacted before hashing, so the log
+reordering or re-encoding an entry breaks verification. Data is redacted before hashing, so the log
 never becomes a second copy of personal data. Appends take a cross-process file lock, re-read the
 current head and fsync, so concurrent writers extend a single chain.
+
+Truncation and replacement are caught three ways:
+
+- an :class:`AuditLog` remembers the last head it wrote or read; an append refuses a file that no
+  longer contains that head (another writer's *extension* of it is accepted);
+- an optional :class:`HeadAnchor` (the service keeps it in DuckDB, a different file) persists the
+  entry count and head after every append; :meth:`AuditLog.verify`, ``/readyz`` and
+  ``audit verify --workdir`` check that the log still contains the anchored entry, so deleting or
+  cutting the log file between process restarts is detected;
+- ``verify_file(path, expect_head=...)`` compares against a head kept outside the host.
+
+Someone who can rewrite both the log and the anchor can still rebuild a consistent history; anchor
+the head outside the host for that threat.
 """
 
 from __future__ import annotations
@@ -17,13 +28,21 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from probabilistic_record_linkage.core.canonical import canonical_json, sha256_hex
 from probabilistic_record_linkage.core.fileio import file_lock
 from probabilistic_record_linkage.core.redaction import redact_value
 
-__all__ = ["GENESIS", "AuditEntry", "AuditError", "AuditLog", "VerifyResult", "verify_file"]
+__all__ = [
+    "GENESIS",
+    "AuditEntry",
+    "AuditError",
+    "AuditLog",
+    "HeadAnchor",
+    "VerifyResult",
+    "verify_file",
+]
 
 GENESIS = "0" * 64
 _FIELDS = ("seq", "ts", "event", "actor", "data", "prev", "hash")
@@ -31,6 +50,14 @@ _FIELDS = ("seq", "ts", "event", "actor", "data", "prev", "hash")
 
 class AuditError(RuntimeError):
     """The audit log is corrupt or was modified."""
+
+
+class HeadAnchor(Protocol):
+    """Durable record of the latest ``(entry count, head hash)``, kept apart from the log file."""
+
+    def load(self) -> tuple[int, str] | None: ...
+
+    def save(self, entries: int, head: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +122,14 @@ def _check_chain(entries: list[AuditEntry]) -> str:
     return previous
 
 
+def _check_contains(entries: list[AuditEntry], count: int, head: str, what: str) -> None:
+    """The verified chain must still contain entry ``count - 1`` with hash ``head``."""
+    if count == 0 and head == GENESIS:
+        return
+    if count < 1 or count > len(entries) or entries[count - 1].hash != head:
+        raise AuditError(f"audit log was truncated or replaced: it no longer contains the {what}")
+
+
 def _read(path: Path) -> list[AuditEntry]:
     if not path.exists():
         return []
@@ -104,10 +139,15 @@ def _read(path: Path) -> list[AuditEntry]:
     return [_parse(line, number + 1) for number, line in enumerate(lines)]
 
 
-def verify_file(path: Path, *, expect_head: str | None = None) -> VerifyResult:
+def verify_file(
+    path: Path, *, expect_head: str | None = None, anchor: tuple[int, str] | None = None
+) -> VerifyResult:
+    """Verify the chain; ``expect_head`` must equal the head, ``anchor`` must still be contained."""
     try:
         entries = _read(path)
         head = _check_chain(entries)
+        if anchor is not None:
+            _check_contains(entries, anchor[0], anchor[1], "anchored head")
     except AuditError as exc:
         return VerifyResult(False, 0, GENESIS, str(exc))
     if expect_head is not None and head != expect_head:
@@ -117,13 +157,20 @@ def verify_file(path: Path, *, expect_head: str | None = None) -> VerifyResult:
 
 class AuditLog:
     def __init__(
-        self, path: Path, *, clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self,
+        path: Path,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        anchor: HeadAnchor | None = None,
     ) -> None:
         self.path = path
         self._clock = clock
+        self._anchor = anchor
         path.parent.mkdir(parents=True, exist_ok=True)
         with file_lock(path):
-            self._head = _check_chain(_read(path))
+            entries = _read(path)
+            self._head = _check_chain(entries)
+            self._count = len(entries)
 
     @property
     def head(self) -> str:
@@ -133,6 +180,10 @@ class AuditLog:
         with file_lock(self.path):
             entries = _read(self.path)
             head = _check_chain(entries)
+            _check_contains(entries, self._count, self._head, "last head this process saw")
+            anchored = self._anchor.load() if self._anchor is not None else None
+            if anchored is not None:
+                _check_contains(entries, anchored[0], anchored[1], "anchored head")
             body = {
                 "seq": len(entries),
                 "ts": self._clock().isoformat(),
@@ -147,11 +198,23 @@ class AuditLog:
                 handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
-            self._head = digest
+            self._head, self._count = digest, len(entries) + 1
+            if self._anchor is not None:
+                self._anchor.save(self._count, digest)
             return AuditEntry(body["seq"], body["ts"], event, actor, body["data"], head, digest)
 
     def entries(self) -> list[AuditEntry]:
+        """All entries of a verified chain that still contains the anchored head."""
         with file_lock(self.path):
             entries = _read(self.path)
             _check_chain(entries)
+            anchored = self._anchor.load() if self._anchor is not None else None
+            if anchored is not None:
+                _check_contains(entries, anchored[0], anchored[1], "anchored head")
             return entries
+
+    def verify(self) -> VerifyResult:
+        """Chain integrity plus the persisted anchor (used by ``/readyz``)."""
+        with file_lock(self.path):
+            anchored = self._anchor.load() if self._anchor is not None else None
+            return verify_file(self.path, anchor=anchored)

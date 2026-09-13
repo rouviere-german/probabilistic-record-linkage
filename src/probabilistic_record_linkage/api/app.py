@@ -21,6 +21,7 @@ from probabilistic_record_linkage.linkage.monitoring import LinkageMetrics, crea
 from probabilistic_record_linkage.linkage.nicknames import NicknameTable
 from probabilistic_record_linkage.linkage.pipeline import PipelineConfig
 from probabilistic_record_linkage.linkage.service import (
+    REVIEW_AUDIT_ANCHOR,
     IdHasher,
     LinkageService,
     default_audit_path,
@@ -67,10 +68,22 @@ def local_service(
     max_concurrent_jobs: int = 2,
     max_jobs_per_client: int = 1,
 ) -> LinkageService:
-    """A service whose store, audit log and registry live under ``state_dir``."""
+    """A service whose store, audit log and registry live under ``state_dir``.
+
+    The audit log's head is anchored in the DuckDB store, so a deleted or truncated log file is
+    detected by ``/readyz`` and refused by the next decision.
+    """
+    store = LinkageStore(state_dir / "linkage.duckdb", memory_limit=memory_limit)
+    try:
+        audit = AuditLog(
+            default_audit_path(state_dir), anchor=store.audit_anchor(REVIEW_AUDIT_ANCHOR)
+        )
+    except BaseException:
+        store.close()
+        raise
     return LinkageService(
-        store=LinkageStore(state_dir / "linkage.duckdb", memory_limit=memory_limit),
-        audit=AuditLog(default_audit_path(state_dir)),
+        store=store,
+        audit=audit,
         metrics=metrics or create_linkage_metrics(),
         id_hasher=IdHasher(id_hash_key or secrets.token_bytes(32)),
         registry=ModelRegistry(state_dir / "registry"),

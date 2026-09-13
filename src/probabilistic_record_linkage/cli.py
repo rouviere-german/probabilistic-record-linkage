@@ -182,8 +182,29 @@ def _entity(args: argparse.Namespace) -> int:
 
 def _audit(args: argparse.Namespace) -> int:
     from probabilistic_record_linkage.linkage.audit import verify_file  # noqa: PLC0415
+    from probabilistic_record_linkage.linkage.service import (  # noqa: PLC0415
+        REVIEW_AUDIT_ANCHOR,
+        default_audit_path,
+    )
+    from probabilistic_record_linkage.linkage.store import LinkageStore  # noqa: PLC0415
 
-    result = verify_file(args.path, expect_head=args.expect_head)
+    path: Path | None = args.path
+    anchor = None
+    if args.workdir is not None:
+        database = args.workdir / "linkage.duckdb"
+        if not database.exists():
+            print("audit verify: no linkage store in --workdir", file=sys.stderr)
+            return 2
+        store = LinkageStore(database)
+        try:
+            anchor = store.load_audit_anchor(REVIEW_AUDIT_ANCHOR)
+        finally:
+            store.close()
+        path = path or default_audit_path(args.workdir)
+    if path is None:
+        print("audit verify needs a log path or --workdir", file=sys.stderr)
+        return 2
+    result = verify_file(path, expect_head=args.expect_head, anchor=anchor)
     _print({"ok": result.ok, "entries": result.entries, "head": result.head, "error": result.error})
     return 0 if result.ok else 1
 
@@ -246,7 +267,13 @@ def _parser() -> argparse.ArgumentParser:
     audit = sub.add_parser("audit", help="audit log tools")
     audit_sub = audit.add_subparsers(dest="audit_command", required=True)
     verify = audit_sub.add_parser("verify", help="verify the hash-chained review audit log")
-    verify.add_argument("path", type=Path)
+    verify.add_argument("path", type=Path, nargs="?", default=None)
+    verify.add_argument(
+        "--workdir",
+        type=Path,
+        default=None,
+        help="also check the head anchored in this state directory's DuckDB store",
+    )
     verify.add_argument("--expect-head", default=None)
 
     demo = sub.add_parser("demo", help="run the offline end-to-end demo")

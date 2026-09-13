@@ -27,7 +27,7 @@ from pydantic import JsonValue
 
 from probabilistic_record_linkage.linkage.analytic import analytic_exact_agreement
 from probabilistic_record_linkage.linkage.attack import frequency_alignment_attack
-from probabilistic_record_linkage.linkage.audit import verify_file
+from probabilistic_record_linkage.linkage.audit import VerifyResult
 from probabilistic_record_linkage.linkage.blocking import pair_completeness, reduction_ratio
 from probabilistic_record_linkage.linkage.evaluation import (
     bcubed_scores,
@@ -53,7 +53,6 @@ from probabilistic_record_linkage.linkage.privacy import (
     encode_records,
     load_key_file,
 )
-from probabilistic_record_linkage.linkage.service import default_audit_path
 from probabilistic_record_linkage.ml.registry import ModelRegistry
 
 __all__ = ["entity_pairs", "run_demo", "write_key_file"]
@@ -183,6 +182,18 @@ def _resolve_with_cli(state_dir: Path, job_id: str, item: dict[str, Any]) -> dic
     }
 
 
+def _verify_audit(state_dir: Path) -> VerifyResult:
+    """Verify the review audit chain against the head anchored in the state's DuckDB store."""
+    from probabilistic_record_linkage.api.app import workdir_service  # noqa: PLC0415
+
+    service = workdir_service(state_dir)
+    try:
+        return service.audit.verify()
+    finally:
+        service.shutdown()
+        service.store.close()
+
+
 def _privacy_report(
     dataset: SyntheticDataset, data_dir: Path, key_path: Path, plaintext_f1: float
 ) -> dict[str, Any]:
@@ -278,7 +289,7 @@ def run_demo(workdir: Path, *, records: int = 20_000, seed: int = 20260913) -> d
     summary["twin_review_item"] = twin_item
     if twin_item is not None:
         summary["twin_resolution"] = _resolve_with_cli(state_dir, job_id, twin_item)
-    verification = verify_file(default_audit_path(state_dir))
+    verification = _verify_audit(state_dir)
     summary["audit"] = {
         "ok": verification.ok,
         "entries": verification.entries,

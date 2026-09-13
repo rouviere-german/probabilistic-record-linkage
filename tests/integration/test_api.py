@@ -163,7 +163,11 @@ def test_readiness_needs_a_verified_model_and_a_writable_store(env: Env) -> None
     if env.service.production_model() is None:
         not_ready = client.get("/readyz")
         assert not_ready.status_code == 503
-        assert not_ready.json()["checks"] == {"model_manifest": "fail", "duckdb_writable": "ok"}
+        assert not_ready.json()["checks"] == {
+            "model_manifest": "fail",
+            "duckdb_writable": "ok",
+            "audit_chain": "ok",
+        }
         registry = env.service.registry
         assert registry is not None
         version = register_run(registry, env.service.run(env.job_id))

@@ -7,6 +7,12 @@ lock; DuckDB is used as an embedded analytical store, not as a multi-writer OLTP
 The store holds the delivered source values, i.e. personal data at rest. The HTTP layer returns
 them only to callers with the ``pii:read`` scope; protecting the file itself (disk encryption,
 backups) is a deployment concern listed in docs/THREAT_MODEL.md.
+
+Reviewer decisions carry the hash of the audit entry that recorded them. :meth:`constraints` turns
+only decisions whose audit entry is present in the verified chain (and binds this job, item and
+decision) into constraints, so a decision written without an audit entry never changes clusters.
+The store also keeps the audit log's anchor (entry count and head), a second copy of the head in a
+different file.
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ import json
 import re
 import tempfile
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -34,8 +40,17 @@ from probabilistic_record_linkage.linkage.clustering import (
 from probabilistic_record_linkage.linkage.pipeline import LinkageRun, ReviewCandidate
 from probabilistic_record_linkage.linkage.thresholds import BAND_REVIEW
 
-__all__ = ["EntityMember", "EntityView", "LinkageStore", "ReviewConflictError"]
+__all__ = [
+    "DECISIONS",
+    "EntityMember",
+    "EntityView",
+    "LinkageStore",
+    "ReviewConflictError",
+    "StoreAuditAnchor",
+    "decision_ref",
+]
 
+DECISIONS = frozenset({"match", "non_match"})
 _MEMORY = re.compile(r"^[1-9][0-9]{0,5}(MB|GB)$")
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS jobs (
@@ -83,12 +98,25 @@ _SCHEMA = (
         reviewer_hash VARCHAR,
         decided_at VARCHAR
     )""",
+    """CREATE TABLE IF NOT EXISTS audit_anchor (
+        name VARCHAR PRIMARY KEY,
+        entries BIGINT NOT NULL,
+        head VARCHAR NOT NULL,
+        updated_at VARCHAR NOT NULL
+    )""",
+    # Columns added after the first schema; IF NOT EXISTS makes them no-ops on new databases.
+    "ALTER TABLE review_items ADD COLUMN IF NOT EXISTS audit_hash VARCHAR",
 )
 _RECORD_FIELDS = ("first_name", "last_name", "dob", "sex", "street", "city", "postcode")
 
 
 class ReviewConflictError(RuntimeError):
     """The review item does not exist, belongs to another job or was already decided."""
+
+
+def decision_ref(job_id: str, item_id: str, decision: str) -> str:
+    """Digest binding an audit entry to one job, review item and decision."""
+    return sha256_hex(f"review-decision|{job_id}|{item_id}|{decision}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,11 +182,35 @@ class LinkageStore:
             relation.insert_into(table)
             del relation
 
+    # --- audit anchor -------------------------------------------------------------------------
+    def load_audit_anchor(self, name: str) -> tuple[int, str] | None:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT entries, head FROM audit_anchor WHERE name = ?", [name]
+            ).fetchone()
+        return (int(row[0]), str(row[1])) if row is not None else None
+
+    def save_audit_anchor(self, name: str, entries: int, head: str) -> None:
+        """Move the anchor forward (an older entry count never replaces a newer one)."""
+        with self._lock:
+            current = self.load_audit_anchor(name)
+            if current is not None and current[0] >= entries:
+                return
+            self._con.execute(
+                "INSERT OR REPLACE INTO audit_anchor (name, entries, head, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                [name, entries, head, _now()],
+            )
+
+    def audit_anchor(self, name: str) -> StoreAuditAnchor:
+        return StoreAuditAnchor(self, name)
+
     # --- jobs -------------------------------------------------------------------------------
     def create_job(self, job_id: str, client_hash: str, n_records: int) -> None:
         with self._lock:
             self._con.execute(
-                "INSERT INTO jobs VALUES (?, ?, 'running', ?, NULL, ?, NULL, NULL)",
+                "INSERT INTO jobs (job_id, client_hash, status, created_at, n_records) "
+                "VALUES (?, ?, 'running', ?, ?)",
                 [job_id, client_hash, _now(), n_records],
             )
 
@@ -266,7 +318,8 @@ class LinkageStore:
             if exists:
                 continue
             self._con.execute(
-                "INSERT INTO review_items VALUES (?, ?, ?, ?, ?, ?, 'open', ?, NULL, NULL, NULL)",
+                "INSERT INTO review_items (item_id, job_id, left_row, right_row, probability, "
+                "reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
                 [item_id, job_id, item.left, item.right, item.probability, item.reason, _now()],
             )
             added += 1
@@ -378,47 +431,68 @@ class LinkageStore:
             }
         return fields
 
-    def decide(
-        self, job_id: str, item_id: str, decision: str, reviewer_hash: str
-    ) -> dict[str, Any]:
-        if decision not in {"match", "non_match"}:
-            raise ValueError("decision must be match or non_match")
+    def open_review_item(self, job_id: str, item_id: str) -> dict[str, Any]:
+        """The open item ``item_id`` of ``job_id``; nothing is changed."""
         with self._lock:
             row = self._con.execute(
                 "SELECT job_id, left_row, right_row, probability, reason, status "
                 "FROM review_items WHERE item_id = ?",
                 [item_id],
             ).fetchone()
-            if row is None or row[0] != job_id or row[5] != "open":
-                raise ReviewConflictError("review item is not open for this job")
-            self._con.execute(
-                "UPDATE review_items SET status = 'decided', decision = ?, reviewer_hash = ?, "
-                "decided_at = ? WHERE item_id = ? AND status = 'open'",
-                [decision, reviewer_hash, _now(), item_id],
-            )
+        if row is None or row[0] != job_id or row[5] != "open":
+            raise ReviewConflictError("review item is not open for this job")
         return {
             "item_id": item_id,
             "left_row": int(row[1]),
             "right_row": int(row[2]),
             "probability": float(row[3]),
             "reason": str(row[4]),
-            "decision": decision,
         }
 
-    def constraints(self, job_id: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-        """(must-link, cannot-link) row pairs of decided items; the latest decision wins."""
+    def decide(
+        self, job_id: str, item_id: str, decision: str, reviewer_hash: str, *, audit_hash: str
+    ) -> dict[str, Any]:
+        """Close an open item with a decision already recorded in the audit log."""
+        if decision not in DECISIONS:
+            raise ValueError("decision must be match or non_match")
+        with self._lock:
+            item = self.open_review_item(job_id, item_id)
+            updated = self._con.execute(
+                "UPDATE review_items SET status = 'decided', decision = ?, reviewer_hash = ?, "
+                "decided_at = ?, audit_hash = ? "
+                "WHERE item_id = ? AND job_id = ? AND status = 'open' RETURNING item_id",
+                [decision, reviewer_hash, _now(), audit_hash, item_id, job_id],
+            ).fetchall()
+        if len(updated) != 1:
+            raise ReviewConflictError("review item is not open for this job")
+        return {**item, "decision": decision}
+
+    def constraints(
+        self, job_id: str, audited: Mapping[str, str]
+    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]], int]:
+        """``(must-link, cannot-link, ignored)`` from decided items; the latest decision wins.
+
+        ``audited`` maps the hash of every verified ``review_decision`` audit entry to its
+        ``decision_ref``. Decisions whose audit entry is missing or bound to another job, item or
+        decision are ignored and counted.
+        """
         with self._lock:
             rows = self._con.execute(
-                "SELECT left_row, right_row, decision FROM review_items "
+                "SELECT item_id, left_row, right_row, decision, audit_hash FROM review_items "
                 "WHERE job_id = ? AND status = 'decided' ORDER BY decided_at, item_id",
                 [job_id],
             ).fetchall()
         latest: dict[tuple[int, int], str] = {}
-        for left, right, decision in rows:
+        ignored = 0
+        for item_id, left, right, decision, audit_hash in rows:
+            expected = decision_ref(job_id, str(item_id), str(decision))
+            if audit_hash is None or audited.get(str(audit_hash)) != expected:
+                ignored += 1
+                continue
             latest[(int(left), int(right))] = str(decision)
         must = [pair for pair, decision in latest.items() if decision == "match"]
         cannot = [pair for pair, decision in latest.items() if decision == "non_match"]
-        return must, cannot
+        return must, cannot, ignored
 
     def open_review_depth(self) -> int:
         with self._lock:
@@ -451,3 +525,17 @@ class LinkageStore:
                 "postcode": pl.Utf8,
             },
         )
+
+
+@dataclass(frozen=True, slots=True)
+class StoreAuditAnchor:
+    """:class:`audit.HeadAnchor` backed by the store's ``audit_anchor`` table."""
+
+    store: LinkageStore
+    name: str
+
+    def load(self) -> tuple[int, str] | None:
+        return self.store.load_audit_anchor(self.name)
+
+    def save(self, entries: int, head: str) -> None:
+        self.store.save_audit_anchor(self.name, entries, head)

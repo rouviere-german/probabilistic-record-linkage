@@ -82,6 +82,15 @@ def test_generate_link_review_entity_and_audit_commands(
     )
     assert _last(capsys)["summary"]["used_registered_model"] is True
 
+    assert cli.main(["audit", "verify", "--workdir", str(state)]) == 0
+    assert _last(capsys)["entries"] == 1
+    audit_path.write_bytes(b"")  # truncated to nothing: only the anchored head reveals it
+    assert cli.main(["audit", "verify", str(audit_path)]) == 0
+    assert cli.main(["audit", "verify", "--workdir", str(state)]) == 1
+    assert "anchored head" in _last(capsys)["error"]
+    assert cli.main(["audit", "verify"]) == 2
+    assert cli.main(["audit", "verify", "--workdir", str(tmp_path / "nowhere")]) == 2
+
 
 def test_issue_token_needs_a_secret_and_signs_verifiable_tokens(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

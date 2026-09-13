@@ -109,6 +109,54 @@ def test_a_tampered_log_cannot_be_opened_for_appending(tmp_path: Path) -> None:
         AuditLog(path)
 
 
+def test_truncation_between_appends_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = _filled(path, 3)
+    first_line = path.read_bytes().splitlines(keepends=True)[0]
+    path.write_bytes(first_line)
+    with pytest.raises(AuditError, match="truncated"):
+        log.append("review_decision", "r", {"n": 4})
+    assert path.read_bytes() == first_line
+    path.unlink()
+    with pytest.raises(AuditError, match="truncated"):
+        log.append("review_decision", "r", {"n": 4})
+
+
+class _MemoryAnchor:
+    def __init__(self) -> None:
+        self.value: tuple[int, str] | None = None
+
+    def load(self) -> tuple[int, str] | None:
+        return self.value
+
+    def save(self, entries: int, head: str) -> None:
+        self.value = (entries, head)
+
+
+def test_the_persisted_anchor_detects_truncation_across_restarts(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    anchor = _MemoryAnchor()
+    log = AuditLog(path, clock=_clock, anchor=anchor)
+    for i in range(3):
+        log.append("review_decision", "r", {"n": i})
+    assert anchor.value == (3, log.head)
+    assert log.verify().ok
+    assert verify_file(path, anchor=anchor.value).ok
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(lines[0] + lines[1])
+    reopened = AuditLog(path, anchor=anchor)  # a fresh process only knows the anchor
+    result = reopened.verify()
+    assert not result.ok
+    assert "anchored head" in (result.error or "")
+    assert not verify_file(path, anchor=anchor.value).ok
+    with pytest.raises(AuditError, match="truncated or replaced"):
+        reopened.append("review_decision", "r", {"n": 9})
+    with pytest.raises(AuditError):
+        reopened.entries()
+    path.unlink()
+    assert not AuditLog(path, anchor=anchor).verify().ok
+
+
 def test_two_writers_extend_one_chain(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
     first, second = AuditLog(path), AuditLog(path)

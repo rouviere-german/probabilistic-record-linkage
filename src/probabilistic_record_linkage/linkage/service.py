@@ -7,9 +7,11 @@ Controls implemented here:
   and the review queue carry record ids and match probabilities only;
 - record ids and principals are HMAC-pseudonymized before they reach logs, span attributes and
   stored reviewer columns;
-- every reviewer decision is appended to the hash-chained audit log *before* it changes clusters,
-  and re-resolution never auto-commits clusters that conflict with a cannot-link or exceed the
-  size cap (they stay ``pending_review``).
+- every reviewer decision is appended to the hash-chained audit log *before* it is stored; the
+  stored decision carries the entry's hash and only decisions whose entry is in the verified chain
+  become constraints. The chain's head is anchored in the store, and re-resolution never
+  auto-commits clusters that conflict with a cannot-link or exceed the size cap (they stay
+  ``pending_review``).
 """
 
 from __future__ import annotations
@@ -35,16 +37,20 @@ from probabilistic_record_linkage.linkage.monitoring import LinkageMetrics
 from probabilistic_record_linkage.linkage.nicknames import NicknameTable
 from probabilistic_record_linkage.linkage.normalize import RECORD_COLUMNS
 from probabilistic_record_linkage.linkage.pipeline import LinkageRun, PipelineConfig, link_sources
-from probabilistic_record_linkage.linkage.store import LinkageStore
+from probabilistic_record_linkage.linkage.store import DECISIONS, LinkageStore, decision_ref
 from probabilistic_record_linkage.ml.contracts import validate_source
 from probabilistic_record_linkage.ml.registry import ModelRegistry, RegistryError
 
 __all__ = [
+    "REVIEW_AUDIT_ANCHOR",
     "IdHasher",
     "JobNotFoundError",
     "LinkageService",
     "TooManyJobsError",
+    "default_audit_path",
 ]
+
+REVIEW_AUDIT_ANCHOR = "review-decisions"
 
 _log = get_logger("probabilistic_record_linkage.service")
 
@@ -106,6 +112,7 @@ class LinkageService:
         self._max_per_client = max_jobs_per_client
         self._active: Counter[str] = Counter()
         self._lock = threading.Lock()
+        self._decision_lock = threading.Lock()
         self._runs: OrderedDict[str, LinkageRun] = OrderedDict()
         self._max_cached = max_cached_runs
         self._futures: dict[str, Future[None]] = {}
@@ -124,6 +131,7 @@ class LinkageService:
         return {
             "model_manifest": lambda: self.production_model() is not None,
             "duckdb_writable": self.store.writable,
+            "audit_chain": lambda: self.audit.verify().ok,
         }
 
     # --- jobs -----------------------------------------------------------------------------
@@ -324,32 +332,60 @@ class LinkageService:
             raise JobNotFoundError(job_id)
         return self._run_for(job_id)
 
+    def constraints(self, job_id: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+        """Must-link and cannot-link row pairs of decisions whose audit entry verifies.
+
+        The audit chain is verified (including its persisted anchor) on every call; a decision
+        stored without a matching entry is ignored and logged, so it can never change clusters.
+        """
+        audited = {
+            entry.hash: str(entry.data.get("decision_ref"))
+            for entry in self.audit.entries()
+            if entry.event == "review_decision"
+        }
+        must, cannot, ignored = self.store.constraints(job_id, audited)
+        if ignored:
+            _log.warning(
+                "unaudited_review_decisions_ignored", job=self.hash_id(job_id), count=ignored
+            )
+        return must, cannot
+
     def decide(self, job_id: str, item_id: str, *, decision: str, reviewer: str) -> dict[str, Any]:
-        """Record and audit a decision, then re-resolve the job's clusters with its constraints."""
+        """Audit a decision, store it, then re-resolve the job's clusters with its constraints.
+
+        Order matters: the audit entry is appended (and fsynced) first. If that fails the item
+        stays open and nothing changes. The stored decision carries the entry's hash, and only
+        decisions whose entry is in the verified chain become constraints.
+        """
+        if decision not in DECISIONS:
+            raise ValueError("decision must be match or non_match")
         reviewer_hash = self.hash_id(reviewer)
-        item = self.store.decide(job_id, item_id, decision, reviewer_hash)
+        self.store.open_review_item(job_id, item_id)  # cheap check before a possible re-link
         run = self._run_for(job_id)
-        left_id, right_id = run.record_ids[item["left_row"]], run.record_ids[item["right_row"]]
-        entry = self.audit.append(
-            "review_decision",
-            reviewer_hash,
-            {
-                "job_id": job_id,
-                "item_id": item_id,
-                "left_record_id": left_id,
-                "right_record_id": right_id,
-                "decision": decision,
-                "probability": item["probability"],
-                "reason": item["reason"],
-            },
-        )
-        must, cannot = self.store.constraints(job_id)
-        resolution = run.resolve(must, cannot)
-        self.store.update_clusters(job_id, resolution)
-        self.store.add_review_items(job_id, run.review_candidates())
+        with self._decision_lock:
+            item = self.store.open_review_item(job_id, item_id)
+            left_row, right_row = item["left_row"], item["right_row"]
+            entry = self.audit.append(
+                "review_decision",
+                reviewer_hash,
+                {
+                    "job_id": job_id,
+                    "item_id": item_id,
+                    "decision_ref": decision_ref(job_id, item_id, decision),
+                    "left_record_id": run.record_ids[left_row],
+                    "right_record_id": run.record_ids[right_row],
+                    "decision": decision,
+                    "probability": item["probability"],
+                    "reason": item["reason"],
+                },
+            )
+            self.store.decide(job_id, item_id, decision, reviewer_hash, audit_hash=entry.hash)
+            must, cannot = self.constraints(job_id)
+            resolution = run.resolve(must, cannot)
+            self.store.update_clusters(job_id, resolution)
+            self.store.add_review_items(job_id, run.review_candidates())
         self.metrics.review_decisions_total.labels(decision).inc()
         self.metrics.review_queue_depth.set(self.store.open_review_depth())
-        left_row, right_row = item["left_row"], item["right_row"]
         return {
             "item_id": item_id,
             "decision": decision,
