@@ -68,10 +68,22 @@ def test_degenerate_probability_inputs() -> None:
 
 def test_the_twin_rule_moves_twin_like_matches_to_review() -> None:
     levels = np.asarray(
-        [[1, 4, 4, 2, 5], [5, 4, 4, 2, 5], [1, 4, 4, 2, 1], [1, 4, 3, 2, 5]], dtype=np.int8
+        [
+            [1, 4, 4, 2, 5],  # clearly different first names, same surname, date and address
+            [5, 4, 4, 2, 5],  # the same first name: a duplicate
+            [1, 4, 4, 2, 1],  # twins who moved apart: the address is not required
+            [1, 4, 3, 2, 5],  # date of birth with a day/month swap
+            [1, 3, 2, 2, 5],  # surname typo (JW >= 0.92) and a one-component date error
+            [1, 2, 4, 2, 5],  # surname only loosely similar: not a twin signature
+            [1, 4, 1, 2, 5],  # different date of birth
+            [0, 4, 4, 2, 5],  # missing first name: no evidence either way
+            [2, 4, 4, 2, 5],  # similar first names look like a typo, not like twins
+        ],
+        dtype=np.int8,
     )
     rule = DEFAULT_REVIEW_RULES[0]
-    assert rule.mask(PLAIN_SPACE, levels).tolist() == [True, False, False, False]
+    expected = [True, False, True, True, True, False, False, False, False]
+    assert rule.mask(PLAIN_SPACE, levels).tolist() == expected
     thresholds = Thresholds(
         match=0.9,
         review=0.5,
@@ -80,10 +92,12 @@ def test_the_twin_rule_moves_twin_like_matches_to_review() -> None:
         match_pairs=0,
         review_pairs=0,
     )
-    probabilities = np.asarray([0.99, 0.99, 0.6, 0.1])
+    probabilities = np.asarray([0.99, 0.99, 0.6, 0.99, 0.99, 0.99, 0.99, 0.99, 0.1])
     bands, hits = assign_bands(probabilities, levels, PLAIN_SPACE, thresholds, DEFAULT_REVIEW_RULES)
-    assert bands.tolist() == [1, 2, 1, 0]
-    assert hits == {"possible_twin": 1}
+    assert bands.tolist() == [1, 2, 1, 1, 1, 2, 2, 2, 0]
+    assert hits == {"possible_twin": 3}  # only match-band pairs count as routed
+    private = np.asarray([[1, 3, 2, 2, 5], [1, 2, 2, 2, 5], [1, 3, 1, 2, 5]], dtype=np.int8)
+    assert rule.mask(PRIVATE_SPACE, private).tolist() == [True, False, True]
 
 
 def test_rule_aliases_resolve_per_comparison_space() -> None:
@@ -93,6 +107,16 @@ def test_rule_aliases_resolve_per_comparison_space() -> None:
     assert rule.mask(PRIVATE_SPACE, np.asarray([[5, 0, 0, 0, 0]], dtype=np.int8)).tolist() == [
         False
     ]
+    top = ReviewRule(name="near", levels={"last_name": ("@top2",), "dob": ("@top9",)})
+    last_levels = np.asarray([[0, 4, 1, 0, 0], [0, 3, 1, 0, 0], [0, 2, 4, 0, 0]], dtype=np.int8)
+    assert top.mask(PLAIN_SPACE, last_levels).tolist() == [True, True, False]
+    assert top.mask(PRIVATE_SPACE, last_levels).tolist() == [True, True, False]
+    # @top<N> never reaches the missing level, however large N is.
+    assert top.mask(PLAIN_SPACE, np.asarray([[0, 4, 0, 0, 0]], dtype=np.int8)).tolist() == [False]
+    with pytest.raises(ValueError, match="unknown level"):
+        ReviewRule(name="x", levels={"dob": ("@top0",)}).mask(PLAIN_SPACE, last_levels)
+    with pytest.raises(ValueError, match="unknown level"):
+        ReviewRule(name="x", levels={"dob": ("@topmost",)}).mask(PLAIN_SPACE, last_levels)
 
 
 def test_invalid_rules_are_rejected() -> None:

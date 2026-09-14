@@ -13,8 +13,10 @@ from probabilistic_record_linkage.core.tracing import build_tracer_provider
 from probabilistic_record_linkage.linkage.analytic import analytic_exact_agreement
 from probabilistic_record_linkage.linkage.blocking import pair_completeness
 from probabilistic_record_linkage.linkage.clustering import ClusterConfig
+from probabilistic_record_linkage.linkage.demo import entity_pairs
 from probabilistic_record_linkage.linkage.evaluation import (
     max_entities_per_cluster,
+    merge_rate,
     pairwise_scores,
 )
 from probabilistic_record_linkage.linkage.generator import (
@@ -42,7 +44,7 @@ from probabilistic_record_linkage.linkage.pipeline import (
     link_sources,
 )
 from probabilistic_record_linkage.linkage.privacy import PrivacyConfig, encode_records
-from probabilistic_record_linkage.linkage.thresholds import BAND_MATCH
+from probabilistic_record_linkage.linkage.thresholds import BAND_MATCH, band_of
 from probabilistic_record_linkage.linkage.vocab import World
 from probabilistic_record_linkage.ml.registry import ModelRegistry, RegistryIntegrityError
 
@@ -162,6 +164,23 @@ def test_link_inputs_are_validated(small_dataset: SyntheticDataset) -> None:
         link_sources({"a": source, "b": source})
     with pytest.raises(ValueError, match="at least two"):
         link_sources({"s1": source.head(1)})
+
+
+def test_twin_pairs_are_routed_to_review_and_rarely_merged(world: World) -> None:
+    dataset = generate(GeneratorConfig(seed=world.seed, n_records=20_000), world)
+    run = link_sources(dataset.sources, nicknames=world.nicknames)
+    truth = entity_labels(dataset.truth, list(run.record_ids))
+    twins, _ = entity_pairs(dataset)
+    assert len(twins) >= 40
+    with_rules = merge_rate(run.resolution.labels, truth, twins)[0]
+    f1_with_rules = pairwise_scores(run.resolution.labels, truth).f1
+    run.band = band_of(run.scored.probability, run.thresholds)  # probability bands only
+    without_rules = merge_rate(run.resolve().labels, truth, twins)[0]
+    assert run.rule_hits["possible_twin"] > 0
+    assert without_rules >= 0.5  # the model alone merges most twins
+    assert with_rules <= 0.25
+    assert with_rules <= without_rules / 3
+    assert f1_with_rules >= 0.98
 
 
 def test_the_guard_limits_adversarial_bridge_chains_to_two_entities(world: World) -> None:

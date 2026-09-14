@@ -12,7 +12,8 @@ Everything is measured against the generator's ground truth:
 - EM recovery: |fitted m(exact) - analytic m(exact)| per field, for the default training-block
   estimator and for EM on the candidate pairs;
 - calibration (ECE of match probabilities over candidate pairs);
-- twin and household false-merge rates and per-name-origin-group pairwise scores;
+- twin and household false-merge rates (with the review rules, and for twins also without
+  them, to show what the ``possible_twin`` rule buys) and per-name-origin-group pairwise scores;
 - throughput of ``link_sources`` (records per second, all stages).
 """
 
@@ -44,6 +45,7 @@ from probabilistic_record_linkage.linkage.evaluation import (
 from probabilistic_record_linkage.linkage.generator import GeneratorConfig, entity_labels, generate
 from probabilistic_record_linkage.linkage.normalize import normalize_sources, prepare_records
 from probabilistic_record_linkage.linkage.pipeline import EMConfig, link_sources, train_model
+from probabilistic_record_linkage.linkage.thresholds import band_of
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "bench" / "results"
@@ -110,6 +112,15 @@ def measure(records: int, seed: int) -> dict[str, Any]:
     )
 
     twins, households = entity_pairs(dataset)
+    twin_rate = merge_rate(run.resolution.labels, truth, twins)[0]
+    household_rate = merge_rate(run.resolution.labels, truth, households)[0]
+    # The same run resolved from probability bands alone (no review rules), then restored.
+    resolved_band = run.band
+    run.band = band_of(run.scored.probability, run.thresholds)
+    unruled = run.resolve()
+    twin_rate_without_rules = merge_rate(unruled.labels, truth, twins)[0]
+    run.band = resolved_band
+    run.resolve()
     group_of = dict(
         zip(dataset.truth["record_id"].to_list(), dataset.truth["group"].to_list(), strict=True)
     )
@@ -151,8 +162,10 @@ def measure(records: int, seed: int) -> dict[str, Any]:
             "candidates": per_field_candidates,
         },
         "hard_negatives": {
-            "twin_merge_rate": _round(merge_rate(run.resolution.labels, truth, twins)[0]),
-            "household_merge_rate": _round(merge_rate(run.resolution.labels, truth, households)[0]),
+            "twin_pairs": len(twins),
+            "twin_merge_rate": _round(twin_rate),
+            "twin_merge_rate_without_review_rules": _round(twin_rate_without_rules),
+            "household_merge_rate": _round(household_rate),
         },
         "groups": {
             name: {"precision": _round(s.precision), "recall": _round(s.recall), "f1": _round(s.f1)}
@@ -215,6 +228,10 @@ def print_tables(results: dict[str, Any]) -> None:
         ("EM max abs m error (training blocks)", em["training_blocks_max_abs_error"]),
         ("EM max abs m error (EM on candidates)", em["candidates_max_abs_error"]),
         ("twin false-merge rate", results["hard_negatives"]["twin_merge_rate"]),
+        (
+            "twin false-merge rate without review rules",
+            results["hard_negatives"]["twin_merge_rate_without_review_rules"],
+        ),
         ("household false-merge rate", results["hard_negatives"]["household_merge_rate"]),
         ("link seconds (all stages)", results["link_seconds"]),
         ("records per second", results["records_per_second"]),

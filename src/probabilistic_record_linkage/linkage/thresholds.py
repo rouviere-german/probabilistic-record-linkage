@@ -45,8 +45,9 @@ class ReviewRule(BaseModel):
 
     ``levels`` maps a field to the level labels that trigger the rule; ``@exact``, ``@else`` and
     ``@missing`` stand for the exact, lowest-agreement and missing levels of whichever comparison
-    space is in use, so one rule works for plaintext and privacy mode. A pair triggers the rule
-    only when every listed field is at one of its listed levels.
+    space is in use, and ``@top<N>`` for the exact level and the ``N - 1`` agreement levels below
+    it (never the missing level), so one rule works for plaintext and privacy mode. A pair
+    triggers the rule only when every listed field is at one of its listed levels.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -68,6 +69,10 @@ class ReviewRule(BaseModel):
                     allowed.add(1)
                 elif label == "@missing":
                     allowed.add(0)
+                elif label.startswith("@top") and label[4:].isdigit() and int(label[4:]) >= 1:
+                    allowed.update(
+                        range(max(1, spec.exact_level - int(label[4:]) + 1), spec.exact_level + 1)
+                    )
                 elif label in spec.levels:
                     allowed.add(spec.levels.index(label) + 1)
                 else:
@@ -77,15 +82,16 @@ class ReviewRule(BaseModel):
 
 
 DEFAULT_REVIEW_RULES: tuple[ReviewRule, ...] = (
-    # Twins: same surname, date of birth and address, clearly different first names.
+    # Twins: clearly different first names with the same, or nearly the same, surname and date
+    # of birth. The surname may carry a typo (one level below exact) and the date a swap or a
+    # one-component error (two levels below), and the address is not required: an earlier form of
+    # the rule that needed all three exact let twin pairs through whenever one field of one record
+    # was corrupted (twin false-merge rate 0.38 at 20,000 records against 0.12 with this rule, at
+    # the same pairwise F1; see bench/bench_linkage.py). Pairs with a missing first name are not
+    # routed: they are far more often duplicates than twins.
     ReviewRule(
         name="possible_twin",
-        levels={
-            "first_name": ("@else",),
-            "last_name": ("@exact",),
-            "dob": ("@exact",),
-            "address": ("same postcode", "street similar", "@exact"),
-        },
+        levels={"first_name": ("@else",), "last_name": ("@top2",), "dob": ("@top3",)},
     ),
 )
 
