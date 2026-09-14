@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -233,6 +234,52 @@ def test_oversized_clusters_are_cut_or_marked_pending() -> None:
     solid_path = [(i, i + 1, 0.95) for i in range(5)]
     groups, result = _run(6, solid_path, config=ClusterConfig(size_cap=3))
     assert max(len(group) for group in groups) <= 3
+    assert not result.pending.any()
+
+
+def test_cannot_links_are_never_auto_committed_even_without_the_guard() -> None:
+    path = [(i, i + 1, 0.95) for i in range(4)]
+    groups, result = _run(6, path, config=ClusterConfig(guard=False), cannot_link=[(4, 0)])
+    assert groups == [{0, 1, 2, 3, 4}, {5}]
+    assert result.pending[:5].all()
+    assert not result.pending[5]
+    assert result.reasons == {0: ("unresolved_conflict",)}
+    assert result.status_of(0) == STATUS_PENDING
+
+
+@pytest.mark.parametrize("shape", ["chain", "star", "double_chain"])
+def test_guard_work_stays_bounded_on_large_adversarial_components(shape: str) -> None:
+    n = 800
+    if shape == "chain":
+        edges = [(i, i + 1, 0.95) for i in range(n - 1)]
+    elif shape == "star":
+        edges = [(0, i, 0.95) for i in range(1, n)]
+    else:  # a ladder: two chains with rungs, no articulation points
+        half = n // 2
+        edges = [(i, i + 1, 0.95) for i in range(half - 1)]
+        edges += [(half + i, half + i + 1, 0.95) for i in range(half - 1)]
+        edges += [(i, half + i, 0.95) for i in range(half)]
+
+    def oracle(a: IntArray, b: IntArray) -> FloatArray:
+        return np.full(a.size, 1e-6)
+
+    start = time.perf_counter()
+    groups, result = _run(n, edges, conflict_oracle=oracle)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 3.0, f"{shape}: {elapsed:.2f} s"
+    # Whatever could not be split safely is held for review, never auto-committed.
+    for group in groups:
+        if len(group) > ClusterConfig().size_cap:
+            assert result.pending[sorted(group)].all()
+
+
+def test_guard_splitting_at_the_check_size_limit_is_fast() -> None:
+    n = ClusterConfig().max_check_size
+    edges = [(i, i + 1, 0.95) for i in range(n - 1)]
+    start = time.perf_counter()
+    groups, result = _run(n, edges)
+    assert time.perf_counter() - start < 1.0
+    assert max(len(group) for group in groups) <= ClusterConfig().size_cap
     assert not result.pending.any()
 
 

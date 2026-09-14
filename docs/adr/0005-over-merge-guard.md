@@ -58,3 +58,27 @@ auto-committed. Must-links are never cut, and every cut edge goes to the review 
   report the with/without numbers on every run.
 - The rules add Python work per component with three or more records; clustering stays about one
   second for 200,000 records.
+
+## Amendment (2026-09-14): bounded work and cannot-links without the guard
+
+An adversarial review showed that the bridge-record rule recomputed connected components once
+per articulation point and that `_split_component` looped without a work bound: a chain of
+matching records cost about 8x more time per doubling (0.09 s, 0.68 s and 5.23 s for 100, 200
+and 400 records), so a few thousand chained records in one upload would have tied up a job worker
+for hours. It also showed that `ClusterConfig(guard=False)` auto-committed clusters containing a
+reviewer's cannot-link.
+
+Changes:
+
+- one depth-first search per pass now yields every articulation point together with the sizes
+  of the parts it separates (DFS intervals), and bridge sides are prefix sums over DFS order, so
+  each split pass is linear in the component;
+- a component with more than `max_check_size` records (200) is held for review as a whole with
+  reason `too_large_to_check` instead of being split, which bounds the guard's work per
+  component; `tests/unit/test_clustering.py::test_guard_work_stays_bounded_on_large_adversarial_components`
+  checks chains, stars and ladders of 800 records;
+- with the guard off, a component containing a cannot-link pair is `pending_review`
+  (`tests/unit/test_clustering.py::test_cannot_links_are_never_auto_committed_even_without_the_guard`).
+
+The clean-data results of the benchmarks did not change: no component in the 20,000- or
+200,000-record runs exceeds 200 records.

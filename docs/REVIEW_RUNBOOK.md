@@ -13,6 +13,7 @@ model is deliberately not allowed to decide some pairs on its own.
 | `guard_bridge_record` | One record linked two groups that do not match each other; its links to the weaker group were cut | Whether the record copies fields from two different people |
 | `guard_weak_bridge`, `guard_conflict`, `guard_size_cap` | Other guard cuts: a single weak connecting edge, a conflicting pair, or an oversized cluster | The records on both sides of the cut |
 | `pending_unresolved_conflict`, `pending_size_cap` | A cluster that is not auto-committed at all | The whole cluster (entity lookup with `pii:read`) |
+| `pending_too_large_to_check` (usually with `size_cap`) | A component of more than 200 records: the guard held it for review as a whole instead of splitting it, which bounds the work an adversarial upload can cause | Whether the source contains chained or copied records (possible injection) |
 
 Items are listed per job with `GET /v1/link-jobs/{job_id}/review-items` (scope `review:write`;
 add `pii:read` to see the record fields) or `probabilistic-record-linkage review list`.
