@@ -358,6 +358,74 @@ def _part_of(dfs: _Dfs, point: int, separated: list[int], node: int) -> int:
     return _REST
 
 
+_Attachment = dict[int, tuple[float, bool]]  # part -> (strongest link probability, has must-link)
+_Candidate = tuple[float, int, list[int], int, _Attachment]  # weight, vertex, big parts, point
+
+
+@dataclass(frozen=True, slots=True)
+class _SolidGraph:
+    """DFS of a component's solid edges, with each node's DFS children and incident edges."""
+
+    dfs: _Dfs
+    children: list[list[int]]
+    incident: list[list[tuple[int, float, bool]]]  # (other node, probability, must-link)
+
+
+def _articulation_candidate(
+    graph: _SolidGraph, subset: list[int], point: int, config: ClusterConfig
+) -> _Candidate | None:
+    """Score one articulation point: the weight of the links a detachment would cut.
+
+    ``None`` when removing ``point`` does not leave at least two parts of ``min_side_records``
+    records that it is linked to, or when must-links tie it to more than one of them.
+    """
+    dfs, children, incident = graph.dfs, graph.children, graph.incident
+    separated = _separated_parts(dfs, children, point)
+    sizes = {part: dfs.subtree_size(part) if part != _REST else 0 for part in separated}
+    if _REST in sizes:
+        component_size = dfs.subtree_size(dfs.root[point])
+        sizes[_REST] = component_size - 1 - sum(sizes[part] for part in sizes if part != _REST)
+    big = [part for part in separated if sizes[part] >= config.min_side_records]
+    if len(big) < 2:
+        return None
+    attachment: _Attachment = {}
+    for other, probability, must in incident[point]:
+        part = _part_of(dfs, point, separated, other)
+        if part not in big:
+            continue
+        strongest, has_must = attachment.get(part, (0.0, False))
+        attachment[part] = (max(strongest, probability), has_must or must)
+    must_parts = [part for part, (_, must) in attachment.items() if must]
+    if len(must_parts) > 1 or len(attachment) < 2:
+        return None
+    if must_parts:
+        weight = max(
+            strength for part, (strength, _) in attachment.items() if part != must_parts[0]
+        )
+    else:
+        weight = sorted((strength for strength, _ in attachment.values()), reverse=True)[1]
+    return (weight, subset[point], big, point, attachment)
+
+
+def _part_members(graph: _SolidGraph, point: int, big: list[int]) -> dict[int, set[int]]:
+    """Local nodes of each big part left by removing ``point``, read off the DFS intervals."""
+    dfs, children = graph.dfs, graph.children
+    order = sorted(range(len(dfs.tin)), key=lambda node: dfs.tin[node])
+
+    def interval(node: int) -> set[int]:
+        return set(order[dfs.tin[node] : dfs.tout[node] + 1])
+
+    members = {part: interval(part) for part in big if part != _REST}
+    if _REST in big:
+        rest = interval(dfs.root[point])
+        rest.discard(point)
+        for part in _separated_parts(dfs, children, point):
+            if part != _REST:
+                rest -= members.get(part) or interval(part)
+        members[_REST] = rest
+    return members
+
+
 def _bridge_record_split(
     subset: list[int], edges: list[LocalEdge], config: ClusterConfig
 ) -> _Split | None:
@@ -371,9 +439,8 @@ def _bridge_record_split(
         return None
     solid = [edge for edge in edges if _is_solid(edge, config)]
     position = {node: i for i, node in enumerate(subset)}
-    simple = [(position[a], position[b]) for a, b, _, _ in solid]
     n_local = len(subset)
-    dfs = _tarjan(n_local, simple)
+    dfs = _tarjan(n_local, [(position[a], position[b]) for a, b, _, _ in solid])
     children: list[list[int]] = [[] for _ in range(n_local)]
     for node in range(n_local):
         if dfs.parent[node] != -1:
@@ -382,57 +449,15 @@ def _bridge_record_split(
     for a, b, probability, must in solid:
         incident[position[a]].append((position[b], probability, must))
         incident[position[b]].append((position[a], probability, must))
-    best: tuple[float, int, list[int], int, dict[int, tuple[float, bool]]] | None = None
-    for point in sorted(dfs.articulation):
-        separated = _separated_parts(dfs, children, point)
-        component_size = dfs.subtree_size(dfs.root[point])
-        sizes = {
-            part: dfs.subtree_size(part) if part != _REST else 0 for part in separated
-        }
-        if _REST in sizes:
-            sizes[_REST] = component_size - 1 - sum(
-                size for part, size in sizes.items() if part != _REST
-            )
-        big = [part for part in separated if sizes[part] >= config.min_side_records]
-        if len(big) < 2:
-            continue
-        attachment: dict[int, tuple[float, bool]] = {}
-        for other, probability, must in incident[point]:
-            part = _part_of(dfs, point, separated, other)
-            if part not in big:
-                continue
-            strongest, has_must = attachment.get(part, (0.0, False))
-            attachment[part] = (max(strongest, probability), has_must or must)
-        must_parts = [part for part, (_, must) in attachment.items() if must]
-        if len(must_parts) > 1 or len(attachment) < 2:
-            continue
-        strengths = sorted((strength for strength, _ in attachment.values()), reverse=True)
-        if must_parts:
-            weight = max(
-                strength for part, (strength, _) in attachment.items() if part != must_parts[0]
-            )
-        else:
-            weight = strengths[1] if len(attachment) > 1 else strengths[0]
-        vertex = subset[point]
-        if best is None or (weight, vertex) < best[:2]:
-            best = (weight, vertex, big, point, attachment)
+    graph = _SolidGraph(dfs, children, incident)
+    candidates = (
+        _articulation_candidate(graph, subset, point, config) for point in sorted(dfs.articulation)
+    )
+    best = min((c for c in candidates if c is not None), key=lambda c: c[:2], default=None)
     if best is None:
         return None
     _, _, big, point, attachment = best
-    order = sorted(range(n_local), key=lambda node: dfs.tin[node])
-    members: dict[int, set[int]] = {}
-    root = dfs.root[point]
-    component = set(order[dfs.tin[root] : dfs.tout[root] + 1])
-    component.discard(point)
-    for part in big:
-        if part != _REST:
-            members[part] = set(order[dfs.tin[part] : dfs.tout[part] + 1])
-            component -= members[part]
-    for part in _separated_parts(dfs, children, point):
-        if part != _REST and part not in members:
-            component -= set(order[dfs.tin[part] : dfs.tout[part] + 1])
-    if _REST in big:
-        members[_REST] = component
+    members = _part_members(graph, point, big)
     groups = {part: frozenset(subset[node] for node in nodes) for part, nodes in members.items()}
     must_parts = [part for part, (_, must) in attachment.items() if must]
     keep = (
@@ -440,7 +465,8 @@ def _bridge_record_split(
         if must_parts
         else max(attachment, key=lambda part: (attachment[part][0], -min(groups[part])))
     )
-    anchors = [groups[keep] | {subset[point]}, *(group for part, group in groups.items() if part != keep)]
+    others = [group for part, group in groups.items() if part != keep]
+    anchors = [groups[keep] | {subset[point]}, *others]
     return _finish_split(subset, edges, sorted(anchors, key=min), "bridge_record")
 
 
@@ -514,9 +540,7 @@ def _choose_cut(
         if not (oversize or weak_link or separates(child)):
             continue
         if best is None or (weight, key) < (best.weight, best.key):
-            reason = (
-                "conflict" if separates(child) else ("size_cap" if oversize else "weak_bridge")
-            )
+            reason = "conflict" if separates(child) else ("size_cap" if oversize else "weak_bridge")
             best = _Cut(weight, key, reason)
     return best
 
@@ -529,11 +553,11 @@ def _split_component(
     removed: list[tuple[int, int, float, str]] = []
     if len(comp.nodes) > config.max_check_size:
         # Held for review as a whole: splitting work is bounded by max_check_size per component.
-        reasons = ["unresolved_conflict"] if comp.conflicts else []
+        held = ["unresolved_conflict"] if comp.conflicts else []
         if len(comp.nodes) > config.size_cap:
-            reasons.append("size_cap")
-        reasons.append("too_large_to_check")
-        return [(list(range(len(comp.nodes))), tuple(reasons))], removed
+            held.append("size_cap")
+        held.append("too_large_to_check")
+        return [(list(range(len(comp.nodes))), tuple(held))], removed
     work: list[list[int]] = [list(range(len(comp.nodes)))]
     while work:
         subset = work.pop()
@@ -683,6 +707,18 @@ def _add_implicit_conflicts(
             comps[label].conflicts.add(pair)
 
 
+def _unguarded(labels: Int64Array, cannot: set[tuple[int, int]]) -> Resolution:
+    """No splitting, but a reviewer's cannot-link is still never auto-committed."""
+    pending = np.zeros(labels.size, dtype=bool)
+    conflicted: dict[int, tuple[str, ...]] = {}
+    for a, b in sorted(cannot):
+        if labels[a] == labels[b]:
+            conflicted[int(labels[a])] = ("unresolved_conflict",)
+    for cluster in conflicted:
+        pending[labels == cluster] = True
+    return Resolution(labels, pending, conflicted)
+
+
 def resolve_clusters(
     n: int,
     left: Int64Array,
@@ -715,14 +751,7 @@ def resolve_clusters(
     if n == 0:
         return Resolution(labels, pending)
     if not cfg.guard:
-        # No splitting, but a reviewer's cannot-link is still never auto-committed.
-        conflicted: dict[int, tuple[str, ...]] = {}
-        for a, b in sorted(cannot):
-            if labels[a] == labels[b]:
-                conflicted[int(labels[a])] = ("unresolved_conflict",)
-        for cluster in conflicted:
-            pending[labels == cluster] = True
-        return Resolution(labels, pending, conflicted)
+        return _unguarded(labels, cannot)
     comps = _components_to_check(labels, edges, cannot)
     if not comps:
         return Resolution(labels, pending)

@@ -165,6 +165,23 @@ class JwtVerifier:
     def configured(self) -> bool:
         return bool(self._secret)
 
+    def _identity(self, claims: Mapping[str, object]) -> tuple[str, str | None] | None:
+        """``(subject, tenant)`` of well-formed claims within the lifetime cap, else ``None``."""
+        subject = claims.get("sub")
+        issued, expires = claims.get("iat"), claims.get("exp")
+        if not isinstance(subject, str) or not 1 <= len(subject) <= 128:
+            return None
+        if not isinstance(issued, int | float) or not isinstance(expires, int | float):
+            return None
+        if expires - issued > self._max_ttl:
+            return None
+        tenant = claims.get("tenant")
+        if tenant is not None and (
+            not isinstance(tenant, str) or not TENANT_PATTERN.fullmatch(tenant)
+        ):
+            return None  # a malformed ownership claim must not fall back to another owner
+        return subject, tenant
+
     def verify(self, presented: str | None) -> Principal | None:
         if not self._secret or not presented or len(presented) > _MAX_TOKEN_LENGTH:
             return None
@@ -180,19 +197,10 @@ class JwtVerifier:
             )
         except jwt.PyJWTError:
             return None
-        subject = claims.get("sub")
-        issued, expires = claims.get("iat"), claims.get("exp")
-        if not isinstance(subject, str) or not 1 <= len(subject) <= 128:
+        identity = self._identity(claims)
+        if identity is None:
             return None
-        if not isinstance(issued, int | float) or not isinstance(expires, int | float):
-            return None
-        if expires - issued > self._max_ttl:
-            return None
-        tenant = claims.get("tenant")
-        if tenant is not None and (
-            not isinstance(tenant, str) or not TENANT_PATTERN.fullmatch(tenant)
-        ):
-            return None  # a malformed ownership claim must not fall back to another owner
+        subject, tenant = identity
         scope = claims.get("scope", "")
         granted = frozenset(scope.split()) & SCOPES if isinstance(scope, str) else frozenset()
         key_id = hmac.new(self._pseudonym_key, subject.encode("utf-8"), hashlib.sha256).hexdigest()[

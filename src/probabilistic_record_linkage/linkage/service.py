@@ -256,9 +256,7 @@ class LinkageService:
         if owner is not None:
             stored = job.get("owner_hash")
             # Jobs without an owner (created before ownership was recorded) belong to nobody.
-            if not isinstance(stored, str) or not hmac.compare_digest(
-                stored, self.hash_id(owner)
-            ):
+            if not isinstance(stored, str) or not hmac.compare_digest(stored, self.hash_id(owner)):
                 raise JobNotFoundError(job_id)
         return job
 

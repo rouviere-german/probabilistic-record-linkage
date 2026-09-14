@@ -212,9 +212,7 @@ class LinkageStore:
         return StoreAuditAnchor(self, name)
 
     # --- jobs -------------------------------------------------------------------------------
-    def create_job(
-        self, job_id: str, client_hash: str, n_records: int, *, owner_hash: str
-    ) -> None:
+    def create_job(self, job_id: str, client_hash: str, n_records: int, *, owner_hash: str) -> None:
         with self._lock:
             self._con.execute(
                 "INSERT INTO jobs (job_id, client_hash, status, created_at, n_records, "

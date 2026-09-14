@@ -212,7 +212,9 @@ def test_subjects_of_one_tenant_share_jobs_and_other_tenants_do_not(
     assert client.get(base, headers=same_subject).status_code == 200
     assert client.get(f"{base}/review-items", headers=same_subject).status_code == 200
     assert client.get(base, headers=_auth("link:run", subject="batch-bot")).status_code == 404
-    assert client.get(base, headers=_auth("link:run", subject="carol", tenant=None)).status_code == 404
+    assert (
+        client.get(base, headers=_auth("link:run", subject="carol", tenant=None)).status_code == 404
+    )
     # The module job belongs to the tenant: any member sees it, whatever their subject.
     member = _auth("link:run", subject="carol")
     assert client.get(f"/v1/link-jobs/{env.job_id}", headers=member).status_code == 200

@@ -72,8 +72,8 @@ def test_jobs_are_invisible_to_other_owners_but_open_to_the_local_operator(job: 
 
 def test_jobs_created_before_ownership_belong_to_nobody_over_the_api(job: Job) -> None:
     service = job.service
-    with service.store._lock:  # noqa: SLF001 - simulate a row written by an older version
-        service.store._con.execute(  # noqa: SLF001
+    with service.store._lock:
+        service.store._con.execute(
             "UPDATE jobs SET owner_hash = NULL WHERE job_id = ?", [job.job_id]
         )
     with pytest.raises(JobNotFoundError):
