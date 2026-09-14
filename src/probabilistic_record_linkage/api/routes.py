@@ -7,8 +7,12 @@
 | ``GET /v1/link-jobs/{job_id}/entities/{record_id}`` | ``entity:read`` (+ ``pii:read``) |
 | ``GET /v1/link-jobs/{job_id}/review-items`` | ``review:write`` (+ ``pii:read``) |
 
-With ``pii:read`` the responses include the record fields; without it, only ids and probabilities.
 | ``POST /v1/link-jobs/{job_id}/review-items/{item_id}/decision`` | ``review:write`` |
+
+With ``pii:read`` the responses include the record fields; without it, only ids and probabilities.
+Every ``{job_id}`` route is scoped to the job's owner (the token's ``tenant`` claim, or its
+subject when there is none): other callers get the same 404 as for an unknown id, so a leaked
+job id reveals nothing.
 
 Uploads are limited three ways: the request body size (middleware), the row count (a static
 schema maximum plus ``APP_UPLOAD_MAX_ROWS``) and per-field lengths and formats (the pydantic
@@ -103,7 +107,10 @@ def build_router(service: LinkageService, settings: Settings) -> APIRouter:
         sources = {name: pl.DataFrame(rows, schema=SOURCE_SCHEMA) for name, rows in grouped.items()}
         try:
             job_id = service.submit(
-                principal.key_id, sources, use_registered_model=body.use_registered_model
+                principal.key_id,
+                sources,
+                owner=principal.owner,
+                use_registered_model=body.use_registered_model,
             )
         except TooManyJobsError:
             raise AppError(
@@ -120,16 +127,20 @@ def build_router(service: LinkageService, settings: Settings) -> APIRouter:
 
     @router.get("/link-jobs/{job_id}")
     def get_link_job(job_id: JobId, principal: LinkRun) -> dict[str, Any]:
-        del principal
         try:
-            return service.job(job_id)
+            return service.job(job_id, owner=principal.owner)
         except JobNotFoundError:
             raise AppError(404, "not_found", "Unknown job.") from None
 
     @router.get("/link-jobs/{job_id}/entities/{record_id}")
     def get_entity(job_id: JobId, record_id: RecordId, principal: EntityRead) -> dict[str, Any]:
         try:
-            return service.entity(job_id, record_id, include_pii="pii:read" in principal.scopes)
+            return service.entity(
+                job_id,
+                record_id,
+                include_pii="pii:read" in principal.scopes,
+                owner=principal.owner,
+            )
         except JobNotFoundError:
             raise AppError(404, "not_found", "Unknown job or record.") from None
 
@@ -141,7 +152,10 @@ def build_router(service: LinkageService, settings: Settings) -> APIRouter:
     ) -> dict[str, Any]:
         try:
             items = service.review_queue(
-                job_id, include_pii="pii:read" in principal.scopes, limit=limit
+                job_id,
+                include_pii="pii:read" in principal.scopes,
+                limit=limit,
+                owner=principal.owner,
             )
         except JobNotFoundError:
             raise AppError(404, "not_found", "Unknown job.") from None
@@ -157,6 +171,7 @@ def build_router(service: LinkageService, settings: Settings) -> APIRouter:
                 item_id,
                 decision=body.decision,
                 reviewer=principal.subject or principal.key_id,
+                owner=principal.owner,
             )
         except ReviewConflictError:
             raise AppError(

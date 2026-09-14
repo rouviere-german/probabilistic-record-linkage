@@ -8,13 +8,16 @@ matched.
 JWTs are verified with PyJWT pinned to HS256 (``alg: none`` and algorithm confusion are rejected),
 and must carry ``sub``, ``iat``, ``exp``, ``iss`` and ``aud``; tokens whose lifetime exceeds the
 configured maximum are refused. Scopes come from the space-separated ``scope`` claim; scopes this
-service does not define are ignored. Protected routes fail closed when no secret is configured.
+service does not define are ignored. An optional ``tenant`` claim groups subjects that share link
+jobs; a malformed one invalidates the token. Protected routes fail closed when no secret is
+configured.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -29,6 +32,7 @@ from probabilistic_record_linkage.core.errors import AppError
 __all__ = [
     "API_KEY_HEADER",
     "SCOPES",
+    "TENANT_PATTERN",
     "ApiKeyVerifier",
     "AuthenticatedPrincipal",
     "CompositeVerifier",
@@ -46,6 +50,7 @@ __all__ = [
 
 API_KEY_HEADER = "X-API-Key"
 SCOPES = frozenset({"link:run", "entity:read", "review:write", "pii:read"})
+TENANT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _MAX_KEY_LENGTH = 512
 _MAX_TOKEN_LENGTH = 4096
 _ALGORITHM = "HS256"
@@ -69,6 +74,17 @@ class Principal:
     key_id: str
     subject: str | None = None
     scopes: frozenset[str] = field(default_factory=frozenset)
+    tenant: str | None = None
+
+    @property
+    def owner(self) -> str:
+        """Who owns the link jobs this caller creates and may read or review.
+
+        Callers from the same ``tenant`` claim share jobs (for example a service account that
+        submits batches and the reviewers who work its queue); without the claim, only the same
+        token subject does.
+        """
+        return f"tenant:{self.tenant}" if self.tenant else f"principal:{self.key_id}"
 
 
 class PrincipalVerifier(Protocol):
@@ -104,13 +120,16 @@ def issue_token(
     audience: str,
     ttl_seconds: int = 900,
     now: float | None = None,
+    tenant: str | None = None,
 ) -> str:
     """Create an HS256 token (for operators and tests; production tokens come from an IdP)."""
     unknown = set(scopes) - SCOPES
     if unknown:
         raise ValueError(f"unknown scopes: {sorted(unknown)}")
+    if tenant is not None and not TENANT_PATTERN.fullmatch(tenant):
+        raise ValueError("tenant must match " + TENANT_PATTERN.pattern)
     issued = int(now if now is not None else time.time())
-    claims = {
+    claims: dict[str, object] = {
         "sub": subject,
         "iss": issuer,
         "aud": audience,
@@ -118,6 +137,8 @@ def issue_token(
         "exp": issued + ttl_seconds,
         "scope": " ".join(sorted(set(scopes))),
     }
+    if tenant is not None:
+        claims["tenant"] = tenant
     return jwt.encode(claims, secret, algorithm=_ALGORITHM)
 
 
@@ -167,12 +188,17 @@ class JwtVerifier:
             return None
         if expires - issued > self._max_ttl:
             return None
+        tenant = claims.get("tenant")
+        if tenant is not None and (
+            not isinstance(tenant, str) or not TENANT_PATTERN.fullmatch(tenant)
+        ):
+            return None  # a malformed ownership claim must not fall back to another owner
         scope = claims.get("scope", "")
         granted = frozenset(scope.split()) & SCOPES if isinstance(scope, str) else frozenset()
         key_id = hmac.new(self._pseudonym_key, subject.encode("utf-8"), hashlib.sha256).hexdigest()[
             :12
         ]
-        return Principal(key_id=key_id, subject=subject, scopes=granted)
+        return Principal(key_id=key_id, subject=subject, scopes=granted, tenant=tenant)
 
 
 class CompositeVerifier:

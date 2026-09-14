@@ -101,6 +101,12 @@ def test_valid_tokens_carry_only_known_scopes() -> None:
         {"sub": "x" * 200},
         {"exp": None},
         {"iat": NOW, "exp": NOW + 7_200},
+        {"tenant": "acme corp"},
+        {"tenant": ""},
+        {"tenant": "-acme"},
+        {"tenant": "t" * 65},
+        {"tenant": 7},
+        {"tenant": ["acme"]},
     ],
     ids=[
         "expired",
@@ -111,10 +117,35 @@ def test_valid_tokens_carry_only_known_scopes() -> None:
         "long-subject",
         "no-exp",
         "long-lived",
+        "tenant-with-space",
+        "empty-tenant",
+        "tenant-leading-dash",
+        "long-tenant",
+        "numeric-tenant",
+        "list-tenant",
     ],
 )
 def test_invalid_claims_are_refused(overrides: dict[str, Any]) -> None:
     assert _verifier().verify(jwt.encode(_claims(**overrides), SECRET, algorithm="HS256")) is None
+
+
+def test_the_tenant_claim_defines_the_owner_of_link_jobs() -> None:
+    without = _verifier().verify(_token())
+    assert without is not None
+    assert without.tenant is None
+    assert without.owner == f"principal:{without.key_id}"
+    with_tenant = _verifier().verify(_token(tenant="acme.eu-1"))
+    assert with_tenant is not None
+    assert with_tenant.tenant == "acme.eu-1"
+    assert with_tenant.owner == "tenant:acme.eu-1"
+    other_subject = _verifier().verify(
+        jwt.encode(_claims(sub="bob", tenant="acme.eu-1"), SECRET, algorithm="HS256")
+    )
+    assert other_subject is not None
+    assert other_subject.owner == with_tenant.owner
+    assert other_subject.key_id != with_tenant.key_id
+    with pytest.raises(ValueError, match="tenant"):
+        _token(tenant="not valid")
 
 
 def test_tampered_foreign_unsigned_and_malformed_tokens_are_refused() -> None:

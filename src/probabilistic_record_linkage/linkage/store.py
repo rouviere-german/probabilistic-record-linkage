@@ -8,6 +8,10 @@ The store holds the delivered source values, i.e. personal data at rest. The HTT
 them only to callers with the ``pii:read`` scope; protecting the file itself (disk encryption,
 backups) is a deployment concern listed in docs/THREAT_MODEL.md.
 
+Every job records a keyed pseudonym of its *owner* (the submitting token's tenant claim or
+subject). The service answers "not found" to any other owner, so job ids are not the only thing
+standing between two tenants of one deployment.
+
 Reviewer decisions carry the hash of the audit entry that recorded them. :meth:`constraints` turns
 only decisions whose audit entry is present in the verified chain (and binds this job, item and
 decision) into constraints, so a decision written without an audit entry never changes clusters.
@@ -106,6 +110,8 @@ _SCHEMA = (
     )""",
     # Columns added after the first schema; IF NOT EXISTS makes them no-ops on new databases.
     "ALTER TABLE review_items ADD COLUMN IF NOT EXISTS audit_hash VARCHAR",
+    # Jobs created before ownership existed have a NULL owner: no API caller can own them.
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS owner_hash VARCHAR",
 )
 _RECORD_FIELDS = ("first_name", "last_name", "dob", "sex", "street", "city", "postcode")
 
@@ -206,12 +212,14 @@ class LinkageStore:
         return StoreAuditAnchor(self, name)
 
     # --- jobs -------------------------------------------------------------------------------
-    def create_job(self, job_id: str, client_hash: str, n_records: int) -> None:
+    def create_job(
+        self, job_id: str, client_hash: str, n_records: int, *, owner_hash: str
+    ) -> None:
         with self._lock:
             self._con.execute(
-                "INSERT INTO jobs (job_id, client_hash, status, created_at, n_records) "
-                "VALUES (?, ?, 'running', ?, ?)",
-                [job_id, client_hash, _now(), n_records],
+                "INSERT INTO jobs (job_id, client_hash, status, created_at, n_records, "
+                "owner_hash) VALUES (?, ?, 'running', ?, ?, ?)",
+                [job_id, client_hash, _now(), n_records, owner_hash],
             )
 
     def finish_job(
@@ -239,7 +247,7 @@ class LinkageStore:
         with self._lock:
             row = self._con.execute(
                 "SELECT job_id, client_hash, status, created_at, finished_at, n_records, "
-                "summary, error FROM jobs WHERE job_id = ?",
+                "summary, error, owner_hash FROM jobs WHERE job_id = ?",
                 [job_id],
             ).fetchone()
         if row is None:
@@ -253,6 +261,7 @@ class LinkageStore:
             "n_records",
             "summary",
             "error",
+            "owner_hash",
         )
         job = dict(zip(keys, row, strict=True))
         job["summary"] = json.loads(job["summary"]) if job["summary"] else None

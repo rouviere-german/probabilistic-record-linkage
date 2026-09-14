@@ -11,7 +11,11 @@ import pytest
 from probabilistic_record_linkage.api.app import local_service
 from probabilistic_record_linkage.linkage.audit import AuditError
 from probabilistic_record_linkage.linkage.generator import SyntheticDataset
-from probabilistic_record_linkage.linkage.service import LinkageService, default_audit_path
+from probabilistic_record_linkage.linkage.service import (
+    JobNotFoundError,
+    LinkageService,
+    default_audit_path,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -44,6 +48,37 @@ def _items(job: Job, count: int) -> list[str]:
     items = job.service.review_queue(job.job_id, include_pii=False, limit=count)
     assert len(items) == count
     return [str(item["item_id"]) for item in items]
+
+
+def test_jobs_are_invisible_to_other_owners_but_open_to_the_local_operator(job: Job) -> None:
+    service = job.service
+    (item_id,) = _items(job, 1)
+    record_id = service.review_queue(job.job_id, include_pii=False, limit=1)[0]["left_record_id"]
+    for owner in ("bob", "tenant:acme"):
+        with pytest.raises(JobNotFoundError):
+            service.job(job.job_id, owner=owner)
+        with pytest.raises(JobNotFoundError):
+            service.entity(job.job_id, record_id, include_pii=True, owner=owner)
+        with pytest.raises(JobNotFoundError):
+            service.review_queue(job.job_id, include_pii=False, owner=owner)
+        with pytest.raises(JobNotFoundError):
+            service.decide(job.job_id, item_id, decision="match", reviewer="r", owner=owner)
+    assert service.constraints(job.job_id) == ([], [])
+    assert service.job(job.job_id, owner="alice")["status"] == "succeeded"
+    assert "owner_hash" not in service.job(job.job_id)
+    decided = service.decide(job.job_id, item_id, decision="match", reviewer="r")
+    assert decided["decision"] == "match"
+
+
+def test_jobs_created_before_ownership_belong_to_nobody_over_the_api(job: Job) -> None:
+    service = job.service
+    with service.store._lock:  # noqa: SLF001 - simulate a row written by an older version
+        service.store._con.execute(  # noqa: SLF001
+            "UPDATE jobs SET owner_hash = NULL WHERE job_id = ?", [job.job_id]
+        )
+    with pytest.raises(JobNotFoundError):
+        service.job(job.job_id, owner="alice")
+    assert service.job(job.job_id)["status"] == "succeeded"
 
 
 def test_a_failed_audit_append_leaves_the_decision_unapplied(

@@ -70,7 +70,9 @@ Pipeline (`src/probabilistic_record_linkage/linkage/`), with one OpenTelemetry s
 7. **Cluster** with connected components plus the over-merge guard: weak-cohesion splits,
    bridge-record (articulation point) splits and bridge-edge cuts for conflicts and oversized
    clusters ([ADR 0005](docs/adr/0005-over-merge-guard.md)). Clusters that stay oversized or
-   conflicting are `pending_review` and never auto-committed.
+   conflicting are `pending_review` and never auto-committed, and so are components of more
+   than 200 records, which the guard holds for review unsplit so that adversarial chains cannot
+   stall a job.
 
 The service (`api/`, `linkage/service.py`) runs batch link jobs, looks up the entity of a record,
 serves the review queue and turns reviewer decisions into must-link and cannot-link constraints.
@@ -124,6 +126,10 @@ curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:8000/v1/link-jobs/<j
 | `GET /v1/link-jobs/{job_id}/entities/{record_id}` | `entity:read`, plus `pii:read` for fields |
 | `GET /v1/link-jobs/{job_id}/review-items` | `review:write`, plus `pii:read` for fields |
 | `POST /v1/link-jobs/{job_id}/review-items/{item_id}/decision` | `review:write` |
+
+Jobs belong to the token's `tenant` claim (`issue-token --tenant acme`), or to the token subject
+when there is none. Every `{job_id}` route answers 404 to any other owner, so a submitting
+service account and its reviewers share a tenant while other tenants cannot see the job.
 
 `docker compose up --build` runs the non-root, read-only image with a data volume and the privacy
 key as a mounted secret (see the comments in `docker-compose.yml`). The image build, smoke test,
@@ -246,7 +252,8 @@ maps to evidence in [CLAIMS.md](CLAIMS.md). The records are synthetic but handle
 - **Access control.** JWTs are verified with HS256 pinned, required claims and a lifetime cap.
   Scopes are `link:run`, `entity:read`, `review:write` and `pii:read`. Without `pii:read`, entity
   lookups and review items return record ids and match probabilities only. Routes fail closed when
-  no secret is configured.
+  no secret is configured. Link jobs are scoped to their owner (tenant claim or token subject):
+  other callers get 404 on every job route, so a leaked job id gives them nothing.
 - **No silent over-merges.** Clusters above the size cap, or that still conflict with a reviewer's
   cannot-link, are `pending_review` and never auto-committed. Twin-like matches go to review.
   Reviewer decisions are appended to a SHA-256 hash chain whose head is returned for anchoring.

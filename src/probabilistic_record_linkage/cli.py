@@ -80,6 +80,7 @@ def _issue_token(args: argparse.Namespace) -> int:
         issuer=settings.jwt_issuer,
         audience=settings.jwt_audience,
         ttl_seconds=min(args.ttl, settings.jwt_max_ttl_seconds),
+        tenant=args.tenant,
     )
     print(token)
     return 0
@@ -233,6 +234,11 @@ def _parser() -> argparse.ArgumentParser:
     token.add_argument("--subject", required=True)
     token.add_argument("--scope", action="append", choices=_SCOPES, required=True)
     token.add_argument("--ttl", type=int, default=900)
+    token.add_argument(
+        "--tenant",
+        default=None,
+        help="tenant claim: subjects with the same tenant share their link jobs",
+    )
 
     generate = sub.add_parser("generate", help="write a synthetic multi-source dataset")
     generate.add_argument("--records", type=int, default=20_000)

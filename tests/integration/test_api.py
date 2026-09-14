@@ -24,7 +24,10 @@ pytestmark = pytest.mark.integration
 SECRET = "api-test-jwt-secret-" + "z" * 20
 
 
-def _auth(*scopes: str, subject: str = "alice") -> dict[str, str]:
+TENANT = "acme"  # the submitting account and the reviewers of the module job share it
+
+
+def _auth(*scopes: str, subject: str = "alice", tenant: str | None = TENANT) -> dict[str, str]:
     token = issue_token(
         SECRET.encode(),
         subject=subject,
@@ -32,6 +35,7 @@ def _auth(*scopes: str, subject: str = "alice") -> dict[str, str]:
         issuer="probabilistic-record-linkage",
         audience="linkage-api",
         ttl_seconds=600,
+        tenant=tenant,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -156,6 +160,63 @@ def test_review_decisions_are_audited_and_final(env: Env) -> None:
     assert verification.ok
     assert verification.head == head
     assert "reviewer-1" not in default_audit_path(env.state).read_text(encoding="utf-8")
+
+
+def test_other_subjects_cannot_read_or_decide_on_a_foreign_job(env: Env) -> None:
+    client = env.client
+    record_id = client.get(
+        f"/v1/link-jobs/{env.job_id}/review-items", headers=_auth("review:write")
+    ).json()["items"][0]["left_record_id"]
+    item_id = client.get(
+        f"/v1/link-jobs/{env.job_id}/review-items", headers=_auth("review:write")
+    ).json()["items"][-1]["item_id"]
+    scopes = ("link:run", "entity:read", "review:write", "pii:read")
+    base = f"/v1/link-jobs/{env.job_id}"
+    for outsider in (
+        _auth(*scopes, subject="bob", tenant=None),  # another subject, no tenant claim
+        _auth(*scopes, subject="bob", tenant="other"),  # another tenant
+        _auth(*scopes, subject="alice", tenant=None),  # the creator's subject without the tenant
+    ):
+        responses = [
+            client.get(base, headers=outsider),
+            client.get(f"{base}/entities/{record_id}", headers=outsider),
+            client.get(f"{base}/review-items", headers=outsider),
+            client.post(
+                f"{base}/review-items/{item_id}/decision",
+                json={"decision": "match"},
+                headers=outsider,
+            ),
+        ]
+        assert [r.status_code for r in responses] == [404, 404, 404, 404]
+        assert all(r.json()["error"]["code"] == "not_found" for r in responses)
+        assert "left_fields" not in responses[2].text
+    still_open = client.get(f"{base}/review-items?limit=500", headers=_auth("review:write"))
+    assert item_id in {item["item_id"] for item in still_open.json()["items"]}
+
+
+def test_subjects_of_one_tenant_share_jobs_and_other_tenants_do_not(
+    env: Env, small_dataset: SyntheticDataset
+) -> None:
+    client = env.client
+    submitted = client.post(
+        "/v1/link-jobs",
+        json={"records": _records(small_dataset, limit=300)},
+        headers=_auth("link:run", subject="batch-bot", tenant=None),
+    )
+    assert submitted.status_code == 202, submitted.text
+    job_id = submitted.json()["job_id"]
+    env.service.wait(job_id)
+    base = f"/v1/link-jobs/{job_id}"
+    # Without a tenant claim the owner is the token subject alone.
+    same_subject = _auth("link:run", "review:write", subject="batch-bot", tenant=None)
+    assert client.get(base, headers=same_subject).status_code == 200
+    assert client.get(f"{base}/review-items", headers=same_subject).status_code == 200
+    assert client.get(base, headers=_auth("link:run", subject="batch-bot")).status_code == 404
+    assert client.get(base, headers=_auth("link:run", subject="carol", tenant=None)).status_code == 404
+    # The module job belongs to the tenant: any member sees it, whatever their subject.
+    member = _auth("link:run", subject="carol")
+    assert client.get(f"/v1/link-jobs/{env.job_id}", headers=member).status_code == 200
+    assert client.get(f"/v1/link-jobs/{job_id}", headers=member).status_code == 404
 
 
 def test_readiness_needs_a_verified_model_and_a_writable_store(env: Env) -> None:

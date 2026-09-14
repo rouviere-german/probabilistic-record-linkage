@@ -3,6 +3,11 @@
 Controls implemented here:
 
 - job concurrency caps: a global cap and a per-client cap, both enforced before any work starts;
+- ownership: every job stores a keyed pseudonym of its owner (the caller's tenant claim or token
+  subject, see :attr:`core.security.Principal.owner`). Reading a job, looking up its entities,
+  listing its queue and deciding its items all raise :class:`JobNotFoundError` for any other
+  owner, so a leaked job id gives another tenant nothing. ``owner=None`` is the local operator
+  (CLI and demo), who owns the state directory itself;
 - personal data is returned only when the caller holds ``pii:read``; otherwise entity lookups
   and the review queue carry record ids and match probabilities only;
 - record ids and principals are HMAC-pseudonymized before they reach logs, span attributes and
@@ -140,15 +145,18 @@ class LinkageService:
         client: str,
         sources: Mapping[str, pl.DataFrame],
         *,
+        owner: str | None = None,
         use_registered_model: bool = False,
         wait: bool = False,
     ) -> str:
+        """Start a job for ``client`` (concurrency caps) owned by ``owner`` (default: client)."""
         total = sum(frame.height for frame in sources.values())
         if total > self.max_rows:
             raise ValueError("too many records for one job")
         for name in sorted(sources):
             validate_source(sources[name], max_rows=self.max_rows)
         client_hash = self.hash_id(client)
+        owner_hash = self.hash_id(owner if owner is not None else client)
         with self._lock:
             if sum(self._active.values()) >= self._max_concurrent:
                 raise TooManyJobsError("the service is running its maximum number of jobs")
@@ -157,7 +165,7 @@ class LinkageService:
             self._active[client_hash] += 1
         job_id = uuid.uuid4().hex
         try:
-            self.store.create_job(job_id, client_hash, total)
+            self.store.create_job(job_id, client_hash, total, owner_hash=owner_hash)
             future = self._executor.submit(
                 self._run_job, job_id, client_hash, dict(sources), use_registered_model
             )
@@ -240,15 +248,31 @@ class LinkageService:
             while len(self._runs) > self._max_cached:
                 self._runs.popitem(last=False)
 
-    def job(self, job_id: str) -> dict[str, Any]:
+    def _owned_job(self, job_id: str, owner: str | None) -> dict[str, Any]:
+        """The job, if it exists and ``owner`` may see it (``None`` is the local operator)."""
         job = self.store.get_job(job_id)
         if job is None:
             raise JobNotFoundError(job_id)
+        if owner is not None:
+            stored = job.get("owner_hash")
+            # Jobs without an owner (created before ownership was recorded) belong to nobody.
+            if not isinstance(stored, str) or not hmac.compare_digest(
+                stored, self.hash_id(owner)
+            ):
+                raise JobNotFoundError(job_id)
+        return job
+
+    def job(self, job_id: str, *, owner: str | None = None) -> dict[str, Any]:
+        job = self._owned_job(job_id, owner)
         job.pop("client_hash", None)
+        job.pop("owner_hash", None)
         return job
 
     # --- entities -------------------------------------------------------------------------
-    def entity(self, job_id: str, record_id: str, *, include_pii: bool) -> dict[str, Any]:
+    def entity(
+        self, job_id: str, record_id: str, *, include_pii: bool, owner: str | None = None
+    ) -> dict[str, Any]:
+        self._owned_job(job_id, owner)
         with self.tracer.start_as_current_span("linkage.entity_lookup") as span:
             span.set_attribute("linkage.record", self.hash_id(record_id))
             span.set_attribute("linkage.pii", include_pii)
@@ -276,10 +300,9 @@ class LinkageService:
 
     # --- review ---------------------------------------------------------------------------
     def review_queue(
-        self, job_id: str, *, include_pii: bool, limit: int = 100
+        self, job_id: str, *, include_pii: bool, limit: int = 100, owner: str | None = None
     ) -> list[dict[str, Any]]:
-        if self.store.get_job(job_id) is None:
-            raise JobNotFoundError(job_id)
+        self._owned_job(job_id, owner)
         items = self.store.review_items(job_id, limit=limit)
         fields = (
             self.store.record_fields(
@@ -350,7 +373,15 @@ class LinkageService:
             )
         return must, cannot
 
-    def decide(self, job_id: str, item_id: str, *, decision: str, reviewer: str) -> dict[str, Any]:
+    def decide(
+        self,
+        job_id: str,
+        item_id: str,
+        *,
+        decision: str,
+        reviewer: str,
+        owner: str | None = None,
+    ) -> dict[str, Any]:
         """Audit a decision, store it, then re-resolve the job's clusters with its constraints.
 
         Order matters: the audit entry is appended (and fsynced) first. If that fails the item
@@ -359,6 +390,7 @@ class LinkageService:
         """
         if decision not in DECISIONS:
             raise ValueError("decision must be match or non_match")
+        self._owned_job(job_id, owner)
         reviewer_hash = self.hash_id(reviewer)
         self.store.open_review_item(job_id, item_id)  # cheap check before a possible re-link
         run = self._run_for(job_id)
