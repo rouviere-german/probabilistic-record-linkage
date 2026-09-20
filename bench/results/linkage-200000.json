@@ -1,0 +1,126 @@
+{
+  "machine": {
+    "platform": "Windows-10-10.0.19045-SP0",
+    "python": "3.12.14",
+    "cpu_count": 6,
+    "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel"
+  },
+  "requested_records": 200000,
+  "records": 199684,
+  "entities": 79674,
+  "seed": 20260913,
+  "generation_seconds": 3.16,
+  "link_seconds": 25.13,
+  "records_per_second": 7946,
+  "stage_seconds": {
+    "validate": 0.35,
+    "normalize": 0.33,
+    "block": 17.62,
+    "compare": 2.57,
+    "fit_em": 1.47,
+    "score": 0.31,
+    "threshold": 0.49,
+    "cluster": 1.8
+  },
+  "blocking": {
+    "candidate_pairs": 5279295,
+    "pair_completeness": 0.9918,
+    "reduction_ratio": 0.999735
+  },
+  "linkage": {
+    "precision": 0.994,
+    "recall": 0.9879,
+    "f1": 0.9909,
+    "bcubed_f1": 0.9948,
+    "ece": 0.00125
+  },
+  "baselines": {
+    "exact_key_precision": 1.0,
+    "exact_key_recall": 0.5946,
+    "exact_key_f1": 0.7458,
+    "logistic_1pct_f1": 0.987,
+    "logistic_training_pairs": 53068
+  },
+  "em_recovery": {
+    "training_blocks_max_abs_error": 0.0178,
+    "candidates_max_abs_error": 0.0836,
+    "training_blocks": {
+      "first_name": 0.0178,
+      "last_name": 0.0008,
+      "dob": 0.0013,
+      "sex": 0.0056,
+      "address": 0.0031
+    },
+    "candidates": {
+      "first_name": 0.009,
+      "last_name": 0.002,
+      "dob": 0.0059,
+      "sex": 0.0025,
+      "address": 0.0836
+    },
+    "all_levels_vs_empirical": {
+      "m_max_abs_error": 0.0216,
+      "u_max_abs_error": 0.0008,
+      "u_max_abs_error_vs_candidate_pairs": 0.32,
+      "random_pairs": 200000,
+      "per_field": {
+        "first_name": {
+          "m": 0.0216,
+          "u": 0.0001,
+          "u_vs_candidate_pairs": 0.3175
+        },
+        "last_name": {
+          "m": 0.0023,
+          "u": 0.0002,
+          "u_vs_candidate_pairs": 0.32
+        },
+        "dob": {
+          "m": 0.0055,
+          "u": 0.0001,
+          "u_vs_candidate_pairs": 0.1386
+        },
+        "sex": {
+          "m": 0.0054,
+          "u": 0.0008,
+          "u_vs_candidate_pairs": 0.1297
+        },
+        "address": {
+          "m": 0.0013,
+          "u": 0.0001,
+          "u_vs_candidate_pairs": 0.0026
+        }
+      }
+    }
+  },
+  "hard_negatives": {
+    "twin_pairs": 721,
+    "twin_merge_rate": 0.086,
+    "twin_merge_rate_without_review_rules": 0.9362,
+    "household_merge_rate": 0.018
+  },
+  "groups": {
+    "east": {
+      "precision": 0.9934,
+      "recall": 0.9872,
+      "f1": 0.9903
+    },
+    "north": {
+      "precision": 0.9947,
+      "recall": 0.9882,
+      "f1": 0.9915
+    },
+    "south": {
+      "precision": 0.9926,
+      "recall": 0.9875,
+      "f1": 0.99
+    }
+  },
+  "review": {
+    "review_pairs": 9679,
+    "rule_hits": {
+      "possible_twin": 5239
+    },
+    "pending_records": 30,
+    "guard_removed_edges": 2213
+  }
+}

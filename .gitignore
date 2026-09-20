@@ -34,7 +34,9 @@ mlruns/
 *.npz
 *.duckdb
 *.duckdb.wal
-bench/results/
+# Benchmark output: the small JSON results are committed as the evidence behind README tables.
+bench/results/*
+!bench/results/*.json
 
 # Editors / OS
 .idea/

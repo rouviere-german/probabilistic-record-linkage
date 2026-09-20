@@ -3,7 +3,9 @@
 Resolves duplicate person records across messy sources with MinHash LSH and sorted-neighbourhood
 blocking, an unsupervised Fellegi-Sunter model fit by EM, and an over-merge-guarded clustering
 step. Accuracy is verified against the ground truth of a seeded synthetic generator, and a
-privacy-preserving linkage mode (keyed Bloom filters) is attacked by a frequency-alignment test.
+privacy-preserving linkage mode (keyed Bloom filters) is attacked by frequency alignment and by a
+graph-matching cryptanalysis, which names 77 of the top 100 unhardened encodings and none of the
+hardened ones.
 
 Everything runs offline on a CPU: generating 200,000 records takes seconds, and linking them takes
 under 30 seconds on a 6-core laptop.
@@ -82,7 +84,11 @@ source file hashes, every EM initialization, the `uv.lock` hash and a determinis
 
 Privacy mode ([ADR 0004](docs/adr/0004-privacy-mode-hardening-and-keyed-blocking.md)) has each party
 encode fields as HMAC-keyed Bloom filters under a key read from a mounted secret file. The linkage
-unit compares Dice similarities, blocks on keyed tokens and never sees plaintext.
+unit compares Dice similarities, blocks on keyed tokens and never sees plaintext. The encodings are
+then attacked (`linkage/attack.py`): frequency alignment in three strategies and a graph-matching
+cryptanalysis that matches the similarity graph of the encodings to the similarity graph of the
+public name list. Both run on every benchmark and in the privacy gate, so the hardening defaults
+are justified by a measured contrast rather than by argument.
 
 ## Quickstart
 
@@ -108,6 +114,13 @@ uv run probabilistic-record-linkage review decide --workdir var/state --job <job
     --item <item_id> --decision non_match --reviewer alice
 uv run probabilistic-record-linkage entity --workdir var/state --job <job_id> --record s1-0000001
 uv run probabilistic-record-linkage audit verify var/state/audit/review-decisions.jsonl
+```
+
+Privacy mode links the same dataset from keyed Bloom-filter encodings. The key is read only from a
+mounted secret file named by `APP_PPRL_KEY_FILE` (or `--key-file`); there is no inline-key path:
+
+```bash
+APP_PPRL_KEY_FILE=/run/secrets/pprl_key     uv run probabilistic-record-linkage private-link --data var/data
 ```
 
 HTTP service (every `/v1` route needs a JWT with the named scope):
@@ -137,9 +150,10 @@ trivy scan and SBOM run in CI (job `docker`); containers were not run while buil
 
 ## Results
 
-All numbers below were copied from benchmark output on 2026-09-13 on Windows 10 (10.0.19045), 6
+All numbers below were copied from benchmark output on 2026-09-20 on Windows 10 (10.0.19045), 6
 logical CPUs, Python 3.12.14, CPU only. Data comes from the seeded generator (seed 20260913); the
-default corruption is the one described in `linkage/corruption.py`.
+default corruption is the one described in `linkage/corruption.py`. Every benchmark writes its raw
+JSON under `bench/results/`, which is committed next to this table.
 
 ### Linkage quality and throughput
 
@@ -151,96 +165,128 @@ Command: `uv run python bench/bench_linkage.py --records 200000 --check`
 | Candidate pairs | 154,753 | 5,279,295 | |
 | Blocking pair completeness | 0.9945 | 0.9918 | >= 0.98 |
 | Blocking reduction ratio | 0.999226 | 0.999735 | >= 0.999 |
-| Pairwise precision | 0.9918 | 0.9898 | |
-| Pairwise recall | 0.9936 | 0.9912 | |
-| **Pairwise F1** | **0.9927** | **0.9905** | >= 0.95 |
-| B-cubed F1 | 0.9960 | 0.9950 | |
+| Pairwise precision | 0.9954 | 0.9940 | |
+| Pairwise recall | 0.9900 | 0.9879 | |
+| **Pairwise F1** | **0.9927** | **0.9909** | >= 0.95 |
+| B-cubed F1 | 0.9957 | 0.9948 | |
 | Baseline: exact normalized key, F1 | 0.7536 | 0.7458 | |
 | Baseline: logistic regression on 1% labels, F1 | 0.9866 | 0.9870 | |
 | EM max abs m(exact) error vs analytic, training blocks | 0.0090 | 0.0178 | <= 0.03 |
 | EM max abs m(exact) error, EM on candidate pairs | 0.0108 | 0.0836 | (comparison) |
+| EM max abs m error over **all** levels | 0.0189 | 0.0216 | <= 0.03 |
+| EM max abs u error over **all** levels | 0.0013 | 0.0008 | <= 0.01 |
 | ECE over candidate pairs | 0.00349 | 0.00125 | |
-| Twin false-merge rate | 0.3788 | 0.2802 | |
-| Household false-merge rate | 0.0134 | 0.0181 | |
-| Link time, all stages | 1.66 s | 27.94 s | |
-| Throughput | 12,057 records/s | 7,148 records/s | |
+| Twin false-merge rate (after review routing) | 0.1212 | 0.0860 | |
+| Twin false-merge rate from probability bands alone | 0.9394 | 0.9362 | |
+| Household false-merge rate | 0.0134 | 0.0180 | |
+| Link time, all stages | 1.57 s | 25.13 s | |
+| Throughput | 12,778 records/s | 7,946 records/s | |
 
-At 200,000 records the stages took: validate 0.32 s, normalize 0.35 s, block 20.02 s, compare
-2.74 s, EM 1.60 s, score 0.34 s, threshold 0.68 s, cluster 1.70 s. Blocking dominates.
+At 200,000 records the stages took: validate 0.35 s, normalize 0.33 s, block 17.62 s, compare
+2.57 s, EM 1.47 s, score 0.31 s, threshold 0.49 s, cluster 1.80 s. Blocking dominates (70%).
 
-Per name-origin group at 199,684 records (pairwise precision / recall / F1): north 0.9909 / 0.9914
-/ 0.9912, south 0.9879 / 0.9911 / 0.9895, east 0.9890 / 0.9906 / 0.9898.
+Per name-origin group at 199,684 records (pairwise precision / recall / F1): north 0.9947 / 0.9882
+/ 0.9915, south 0.9926 / 0.9875 / 0.9900, east 0.9934 / 0.9872 / 0.9903.
 
 The labelled logistic regression comes within 0.4 F1 points of the unsupervised model, which needs
 no labels at all. EM on the candidate pairs mis-estimates the address `m` at 200,000 records (the
 0.0836 error); this is the reason for [ADR 0002](docs/adr/0002-u-from-random-pairs-and-training-blocks.md).
 
+The two "all levels" rows compare the whole fitted vectors, not just the exact level, against the
+labelled data: `m` against the matching candidate pairs and `u` against non-matching *random*
+pairs, which is what `u` models. Comparing `u` with the non-matching *candidate* pairs instead
+gives 0.334 at 20,000 records; that is not an error but a measure of how selective blocking is,
+and it is why `u` is not estimated from candidate pairs.
+
 ### Robustness, guard, drift and privacy
 
 Command: `uv run python bench/bench_robustness.py --check` (20,000 records; privacy section on
-50,206 records; 45.3 s; CI job `robustness`).
+50,206 records; 51.5 s; CI job `robustness`).
 
 | Corruption rates scaled by | 0.5 | 1.0 | 1.5 | 2.0 |
 |---|---:|---:|---:|---:|
-| Pairwise F1 | 0.9973 | 0.9927 | 0.9880 | 0.9825 |
+| Pairwise F1 | 0.9975 | 0.9927 | 0.9874 | 0.9822 |
 
-| Calibration | Independent corruption | Correlated corruption (10% sloppy records, 5x rates) |
+Calibration, with independent corruption versus correlated corruption (the same marginal rates,
+errors concentrated in 10% "sloppy" records). The aggregate ECE hides everything, so the two bands
+where a wrong probability costs something are reported next to it: the uncertain band, and the
+match band, where the model's own expected false-discovery rate is what a user would trust.
+
+| Calibration | Independent corruption | Correlated corruption |
 |---|---:|---:|
-| ECE over candidate pairs | 0.00349 | 0.00290 |
-| Pairwise F1 | 0.9927 | 0.9894 |
+| Pairwise F1 | 0.9927 | 0.9896 |
+| ECE over all candidate pairs | 0.00349 | 0.00290 |
+| Uncertain band (0.01 <= p <= 0.99): pairs | 1,699 (1.1%) | 1,836 (1.2%) |
+| Uncertain band: ECE | 0.1443 | 0.0712 |
+| Uncertain band: expected vs observed FDR | 0.750 vs 0.895 | 0.721 vs 0.778 |
+| Match band: pairs | 20,334 (13.1%) | 20,120 (13.0%) |
+| Match band: ECE | 0.0207 | 0.0203 |
+| Match band: expected vs observed FDR | 0.0022 vs 0.0229 | 0.0028 vs 0.0227 |
 
-Correlated errors cost 0.3 F1 points here but did not raise ECE over candidate pairs. Most
-candidate pairs are clear non-matches, so this ECE is a weak probe of calibration in the uncertain
-region.
+Two honest readings of this table. First, the aggregate ECE is a weak probe: the same model that
+looks calibrated to 0.003 over all candidate pairs is off by 0.14 where it is unsure, because
+98.9% of candidate pairs are clear non-matches. Second, the specification expected correlated
+errors to *hurt* calibration. They do not, here: correlated corruption costs 0.3 F1 points but its
+ECE is lower in both bands. What the bands do show is that the model is over-confident in both
+regimes; inside the match band it predicts a false-discovery rate of 0.2% and delivers 2.3%, a
+factor of ten. Conditional independence inflates the weight of agreeing fields that are correlated
+through a shared cause (a record copied between sources agrees everywhere at once). Treat the
+`expected_fdr` of a threshold as a lower bound, not a guarantee.
 
-Over-merge guard: 105 adversarial bridge records in 40 household chains (each record copies the
+Over-merge guard: 104 adversarial bridge records in 40 household chains (each record copies the
 name of one household member and the date of birth and address of the next).
 
 | | With guard | Without guard |
 |---|---:|---:|
-| Max real people in an auto-committed cluster touched by a bridge record | **2** | 5 |
-| Max real people including clusters held for review | 3 | 5 |
-| Touched clusters held for review (`pending_review`) | 3 | 0 |
-| Max identities including bridge records | 5 | 9 |
-| Pairwise F1 on the same data without bridge records | 0.9927 | 0.9774 |
-
-The guard does not split every attack. One touched cluster with 3 real people was left unresolved
-and held for review under the size cap instead of being committed.
+| Max real people in an auto-committed cluster touched by a bridge record | **2** | 4 |
+| Max real people including clusters held for review | 2 | 4 |
+| Touched clusters held for review (`pending_review`) | 2 | 0 |
+| Max identities including bridge records | 4 | 8 |
+| Pairwise F1 on the same data without bridge records | 0.9927 | 0.9786 |
 
 | Drift (comparison-pattern PSI of likely matches, new source vs model reference) | PSI | Alarm (> 0.2) |
 |---|---:|---|
 | New source, same corruption | 0.016 | no |
 | New source, 3x corruption | 0.554 | yes |
 
-Privacy mode on 50,206 records (plaintext F1 0.9916). The attack targets the 100 most frequent
-first-name encodings, and the worst of three strategies is reported:
+Privacy mode on 50,206 records (plaintext F1 0.9925). Four attacks are run on the 100 most
+frequent first-name encodings and the worst one is reported: three frequency-alignment strategies
+(global, length-stratified, salt-aware) and a graph-matching attack that matches the similarity
+graph of the encodings to the similarity graph of the public name list.
 
-| Encoding | F1 | F1 drop | Frequency-attack recovery |
-|---|---:|---:|---:|
-| Keyed Bloom filters, unhardened | 0.9817 | 0.99 pp | 0.20 |
-| Hardened, birth-year salt (default) | 0.9638 | 2.79 pp | 0.10 |
-| Hardened, birth-year + birth-month salt | 0.9446 | 4.70 pp | 0.01 |
+| Encoding | F1 | F1 drop | Best frequency alignment | Graph matching | Worst |
+|---|---:|---:|---:|---:|---:|
+| Keyed Bloom filters, unhardened | 0.9764 | 1.61 pp | 0.20 | **0.77** | 0.77 |
+| Hardened, birth-year salt (default) | 0.9666 | 2.59 pp | 0.10 | 0.00 | 0.10 |
+| Hardened, birth-year + birth-month salt | 0.9473 | 4.52 pp | 0.01 | 0.00 | 0.01 |
+
+Unhardened keyed Bloom filters are not private: the graph-matching attack names 77 of the 100 most
+frequent encodings, because filter similarity tracks name similarity almost exactly (Pearson 0.87
+between the two Dice matrices at this scale). Hardening breaks that correlation (0.01) and the same
+attack recovers nothing; what is left is the salt-aware frequency alignment at 10%.
 
 The specification asked for an F1 drop of at most 3 pp *and* recovery of at most 5%. No measured
-setting meets both at this scale. The default meets the F1 target and halves the attack. The
-stronger salt meets the attack target but loses 4.7 points. The CI threshold of 0.15 for the
-default's recovery is a regression guard at the measured level, not the target. On 20,000 records
-the test gate `tests/integration/test_privacy_gate.py` requires the default to keep recovery at or
-below 5% of the top 100 names, while unhardened encodings must stay above 8%.
+setting meets both. The default meets the F1 target and cuts the worst attack from 77% to 10%; the
+stronger salt meets the attack target and loses 4.52 points. This failure is asserted, not
+narrated: `tests/integration/test_privacy_gate.py` runs on the same 50,000 records, seed and key as
+the benchmark, and the 5% goal for the default is a `strict=True` xfail, so the suite fails the day
+the default meets it and the xfail is not removed. The CI threshold of 0.15 for the default is a
+regression guard at the measured level, not the target.
 
 ### Micro-benchmarks
 
-Command: `uv run python bench/bench_baseline.py` (CI job `bench` runs it with `--check` against
-`bench/thresholds.json`).
+Command: `uv run python bench/bench_baseline.py --check` (CI job `bench`). The table below is one
+recorded run, committed as [`bench/results/latest.json`](bench/results/latest.json); p95 on a
+laptop moves by tens of percent between runs, which is why `bench/thresholds.json` is loose.
 
 | Benchmark | Runs | p50 (us) | p95 (us) |
 |---|---:|---:|---:|
-| redact_text_1kb | 2000 | 443.9 | 671.3 |
-| rate_limiter_check | 20000 | 1.8 | 2.0 |
-| drift_check_10k_vs_10k | 30 | 2293.4 | 3991.6 |
-| em_fit_500k_pairs_4_inits | 10 | 212198.4 | 215000.8 |
-| minhash_signatures_10k_names | 10 | 235211.6 | 254227.2 |
-| jaro_winkler_100k_pairs | 10 | 38290.9 | 39785.7 |
+| redact_text_1kb | 2000 | 436.0 | 512.5 |
+| rate_limiter_check | 20000 | 1.8 | 1.9 |
+| drift_check_10k_vs_10k | 30 | 2154.8 | 2450.0 |
+| em_fit_500k_pairs_4_inits | 10 | 188701.5 | 206427.0 |
+| minhash_signatures_10k_names | 10 | 198561.9 | 221589.6 |
+| jaro_winkler_100k_pairs | 10 | 33712.9 | 39514.6 |
 
 These are single-machine numbers for spotting regressions, not performance claims.
 
@@ -278,13 +324,17 @@ maps to evidence in [CLAIMS.md](CLAIMS.md). The records are synthetic but handle
 - **EM-refined `u` on candidate pairs.** `u` is estimated from random pairs and held fixed, which
   deviates from the specification's "initialized from random pairs" and is kept only as an
   optional strategy ([ADR 0002](docs/adr/0002-u-from-random-pairs-and-training-blocks.md)).
-- **Meeting both privacy targets at once.** At 50,000 records the default loses 2.79 F1 points and
-  the attack recovers 10% of the top 100 names; the stronger salt reaches 1% but loses 4.70 points.
-- **Resistance to stronger cryptanalysis.** Pattern-mining and graph-matching attacks on Bloom
-  filters are not implemented. The keyed blocking tokens are deterministic and reveal their own
-  frequency distribution.
-- **Privacy mode over HTTP.** The API links plaintext batches only; privacy mode is exercised
-  through the library, the demo and the benchmark.
+- **Meeting both privacy targets at once.** At 50,206 records the default loses 2.59 F1 points and
+  the worst attack recovers 10% of the top 100 names; the stronger salt reaches 1% but loses 4.52
+  points. The 5% goal for the default is a `strict=True` xfail in the test suite, not a silence.
+- **Resistance to every cryptanalysis.** Frequency alignment and graph matching are implemented and
+  run on every benchmark and gate. Pattern-mining attacks (Christen et al. 2017) are not: they need
+  to isolate the bit positions of one q-gram, and at 512 bits, 12 hashes and about 400 distinct
+  q-grams roughly nine q-grams share each position, so positions of different q-grams co-occur as
+  often as positions of the same one. The keyed blocking tokens are deterministic and reveal their
+  own frequency distribution.
+- **Privacy mode over HTTP.** The API links plaintext batches only; privacy mode is reachable from
+  the library, the `private-link` CLI command, the demo and the benchmark.
 - **Term-frequency adjustment and LSH in privacy mode.** Both would need the frequency or bit
   structure that hardening removes.
 - **A guarantee against every bridge attack.** Several bridge records per pair of people, or a
@@ -300,6 +350,14 @@ maps to evidence in [CLAIMS.md](CLAIMS.md). The records are synthetic but handle
   clear; use an encrypted volume.
 - **Real-world accuracy.** All results are on synthetic data with a known corruption model. Real
   data has error patterns this generator does not simulate.
+- **An out-of-distribution evaluation.** Every accuracy number comes from this repository's own
+  generator, and the analytic EM check uses the same corruption model, so the evidence is
+  self-consistent by construction. A second generator with different error processes (FEBRL-style),
+  an ablation table (term-frequency adjustment on/off, LSH versus sorted neighbourhood), a
+  multi-bridge adversarial benchmark and a profiled blocking stage (70% of the 200k runtime) are
+  known gaps, not claims.
+- **An incremental git history.** The first nine commits were made from a finished tree at the end
+  of the initial build; the fix commits after them are incremental. Timestamps were never forged.
 
 ## References
 
@@ -313,8 +371,14 @@ maps to evidence in [CLAIMS.md](CLAIMS.md). The records are synthetic but handle
 - R. Schnell, T. Bachteler and J. Reiher, "Privacy-preserving record linkage using Bloom filters",
   BMC Med. Inform. Decis. Mak. 2009; R. Schnell, C. Borgs and J. Encarnacao, hardening
   techniques, 2016.
+- M. Kuzu, M. Kantarcioglu, E. Durham and B. Malin, "A constraint satisfaction cryptanalysis of
+  Bloom filters in private record linkage", PETS 2011 (frequency alignment).
 - F. Niedermeyer et al., "Cryptanalysis of basic Bloom filters used for privacy preserving record
   linkage", J. Priv. Confidentiality 2014; P. Christen et al., pattern-mining cryptanalysis of
-  Bloom filters, 2017.
+  Bloom filters, 2017 (not implemented here; see Non-goals).
+- A. Vidanage, P. Christen, T. Ranbaduge and R. Schnell, "A graph matching attack on
+  privacy-preserving record linkage", CIKM 2020.
+- S. Gold and A. Rangarajan, "A graduated assignment algorithm for graph matching", IEEE TPAMI
+  1996 (the solver behind that attack).
 - R. Linacre et al., Splink (UK Ministry of Justice): estimation of `u` from random pairs and of
   `m` on blocked training sessions.

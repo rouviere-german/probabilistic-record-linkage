@@ -1,0 +1,40 @@
+{
+  "machine": {
+    "platform": "Windows-10-10.0.19045-SP0",
+    "python": "3.12.14",
+    "cpu_count": 6,
+    "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel"
+  },
+  "results": {
+    "redact_text_1kb": {
+      "runs": 2000,
+      "p50_us": 436.0,
+      "p95_us": 512.5
+    },
+    "rate_limiter_check": {
+      "runs": 20000,
+      "p50_us": 1.8,
+      "p95_us": 1.9
+    },
+    "drift_check_10k_vs_10k": {
+      "runs": 30,
+      "p50_us": 2154.8,
+      "p95_us": 2450.0
+    },
+    "em_fit_500k_pairs_4_inits": {
+      "runs": 10,
+      "p50_us": 188701.5,
+      "p95_us": 206427.0
+    },
+    "minhash_signatures_10k_names": {
+      "runs": 10,
+      "p50_us": 198561.9,
+      "p95_us": 221589.6
+    },
+    "jaro_winkler_100k_pairs": {
+      "runs": 10,
+      "p50_us": 33712.9,
+      "p95_us": 39514.6
+    }
+  }
+}

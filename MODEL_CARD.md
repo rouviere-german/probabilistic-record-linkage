@@ -54,22 +54,23 @@ people). Metrics are computed against generator ground truth.
 | Metric | Value | Why |
 |---|---:|---|
 | Blocking pair completeness / reduction ratio | 0.9918 / 0.999735 | Ceiling on recall / cost of comparison |
-| Pairwise precision / recall / F1 | 0.9898 / 0.9912 / 0.9905 | Standard linkage quality |
-| B-cubed F1 | 0.9950 | Per-record cluster quality |
+| Pairwise precision / recall / F1 | 0.9940 / 0.9879 / 0.9909 | Standard linkage quality |
+| B-cubed F1 | 0.9948 | Per-record cluster quality |
 | ECE over candidate pairs | 0.00125 | Probability calibration (weak probe, see caveats) |
 | Max abs m(exact) error vs analytic | 0.0178 | Whether EM recovers the true agreement rates |
-| Twin / household false-merge rate | 0.2802 / 0.0181 | Hard negatives |
+| Max abs m error over all levels vs labelled pairs | 0.0216 | The whole fitted vector, not one level |
+| Twin / household false-merge rate | 0.0860 / 0.0180 | Hard negatives (twins: 0.9362 without the review rule) |
 | Exact-key baseline F1 / logistic regression (1% labels) F1 | 0.7458 / 0.9870 | Context |
 
 ### Per-group error rates (199,684 records)
 
 | Name-origin group | Pairwise precision | Pairwise recall | F1 |
 |---|---:|---:|---:|
-| north | 0.9909 | 0.9914 | 0.9912 |
-| south | 0.9879 | 0.9911 | 0.9895 |
-| east | 0.9890 | 0.9906 | 0.9898 |
+| north | 0.9947 | 0.9882 | 0.9915 |
+| south | 0.9926 | 0.9875 | 0.9900 |
+| east | 0.9934 | 0.9872 | 0.9903 |
 
-The spread between groups is about 0.2 F1 points on this data. The `south` group has the lowest
+The spread between groups is about 0.15 F1 points on this data. The `south` group has the lowest
 precision; `east`, with its concentrated surnames, has the lowest recall. Real populations can differ
 far more; re-measure per group before deployment.
 
@@ -81,19 +82,26 @@ far more; re-measure per group before deployment.
   (surname and address within households, surname and date of birth for twins) is handled by the
   review rule and the guard, not by the model.
 - **Correlated errors.** With errors concentrated in 10% of records at 5x the rates (same marginal
-  rates; `bench/bench_robustness.py`, 20,000 records), F1 fell from 0.9927 to 0.9894. ECE over
-  candidate pairs went from 0.00349 to 0.00290, so no degradation was visible there. Most candidate
-  pairs are clear non-matches, which dominate that ECE.
+  rates; `bench/bench_robustness.py`, 20,000 records), F1 fell from 0.9927 to 0.9896. ECE over
+  candidate pairs went from 0.00349 to 0.00290, so no degradation was visible there, and the same
+  holds inside the uncertain and the match band (0.1443 -> 0.0712 and 0.0207 -> 0.0203). The
+  expected trade-off is therefore *not* reproduced: correlated corruption costs F1 but not
+  calibration on this data.
+- **Over-confidence, in both regimes.** What the band-restricted numbers do show is that the model
+  is over-confident wherever it is not certain. Among candidate pairs with 0.01 <= p <= 0.99 (1.1%
+  of pairs) it predicts a false-discovery rate of 0.750 and delivers 0.895; inside the match band it
+  predicts 0.0022 and delivers 0.0229, a factor of ten. Conditional independence over-weights fields
+  that agree for a shared reason. Treat a threshold's `expected_fdr` as a lower bound.
 - **Blocking completeness.** The prior assumes pairs outside the candidate set are non-matches;
   at 0.9918 pair completeness, about 0.8% of true pairs can never be found.
 
 ## Robustness, drift and monitoring
 
-- **Corruption sweep** (`bench/bench_robustness.py`, 20,000 records): F1 0.9973 / 0.9927 / 0.9880 /
-  0.9825 at 0.5x / 1x / 1.5x / 2x corruption rates.
-- **Adversarial bridge records** (105 records in 40 chains): with the guard, at most 2 real people
-  in an auto-committed cluster touched by a bridge record (5 without); 3 touched clusters were held
-  for review, one of them with 3 real people.
+- **Corruption sweep** (`bench/bench_robustness.py`, 20,000 records): F1 0.9975 / 0.9927 / 0.9874 /
+  0.9822 at 0.5x / 1x / 1.5x / 2x corruption rates.
+- **Adversarial bridge records** (104 records in 40 chains): with the guard, at most 2 real people
+  in an auto-committed cluster touched by a bridge record (4 without); 2 touched clusters were held
+  for review. Several bridge records per pair of people are a known gap (see the README Non-goals).
 - **Drift monitor:** PSI of comparison patterns of likely matches against the reference stored in
   the model, alarm above 0.2. Measured PSI is 0.016 for a new source with the same corruption and
   0.554 for 3x corruption. It is exported as `comparison_pattern_psi`, and per-field PSI is in the
@@ -108,14 +116,19 @@ far more; re-measure per group before deployment.
 
 Keyed Bloom-filter encodings, 50,206 records (`bench/bench_robustness.py`):
 
-| Encoding | F1 | Drop vs plaintext (0.9916) | Frequency-attack recovery (top 100) |
-|---|---:|---:|---:|
-| Unhardened | 0.9817 | 0.99 pp | 0.20 |
-| Hardened, birth-year salt (default) | 0.9638 | 2.79 pp | 0.10 |
-| Hardened, birth-year + month salt | 0.9446 | 4.70 pp | 0.01 |
+| Encoding | F1 | Drop vs plaintext (0.9925) | Best frequency alignment | Graph matching | Worst |
+|---|---:|---:|---:|---:|---:|
+| Unhardened | 0.9764 | 1.61 pp | 0.20 | 0.77 | 0.77 |
+| Hardened, birth-year salt (default) | 0.9666 | 2.59 pp | 0.10 | 0.00 | 0.10 |
+| Hardened, birth-year + month salt | 0.9473 | 4.52 pp | 0.01 | 0.00 | 0.01 |
 
-No setting meets both targets of at most 3 points F1 loss and at most 5% recovery at this scale.
-Stronger attacks (pattern mining, graph matching) were not evaluated.
+Recovery is the share of the 100 most frequent first-name encodings whose plaintext an attacker
+names. No setting meets both targets of at most 3 points F1 loss and at most 5% recovery at this
+scale; the 5% goal for the default is a `strict=True` xfail in `tests/integration/test_privacy_gate.py`
+so the gap cannot be forgotten. Unhardened encodings are broken by graph matching (Vidanage et al.
+2020), which hardening defeats completely on this data. Pattern-mining cryptanalysis (Christen et
+al. 2017) was not implemented: at 512 bits and 12 hashes roughly nine q-grams share each bit
+position, which removes the separation that attack needs.
 
 ## Ethical considerations
 
