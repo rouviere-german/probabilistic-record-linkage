@@ -4,10 +4,14 @@
       "blocking.pair_completeness": 0.98,
       "blocking.reduction_ratio": 0.999,
       "linkage.f1": 0.95,
-      "linkage.bcubed_f1": 0.95
+      "linkage.bcubed_f1": 0.95,
+      "hard_negatives.twin_merge_rate_without_review_rules": 0.5
     },
     "max": {
       "em_recovery.training_blocks_max_abs_error": 0.03,
+      "em_recovery.all_levels_vs_empirical.m_max_abs_error": 0.03,
+      "em_recovery.all_levels_vs_empirical.u_max_abs_error": 0.01,
+      "hard_negatives.twin_merge_rate": 0.15,
       "linkage.ece": 0.02,
       "link_seconds": 120
     }
@@ -17,10 +21,14 @@
       "blocking.pair_completeness": 0.98,
       "blocking.reduction_ratio": 0.999,
       "linkage.f1": 0.95,
-      "linkage.bcubed_f1": 0.95
+      "linkage.bcubed_f1": 0.95,
+      "hard_negatives.twin_merge_rate_without_review_rules": 0.5
     },
     "max": {
       "em_recovery.training_blocks_max_abs_error": 0.03,
+      "em_recovery.all_levels_vs_empirical.m_max_abs_error": 0.03,
+      "em_recovery.all_levels_vs_empirical.u_max_abs_error": 0.01,
+      "hard_negatives.twin_merge_rate": 0.12,
       "linkage.ece": 0.02,
       "link_seconds": 900
     }

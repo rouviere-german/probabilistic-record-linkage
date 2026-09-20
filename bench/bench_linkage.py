@@ -10,7 +10,8 @@ Everything is measured against the generator's ground truth:
 - pairwise precision/recall/F1 and B-cubed F1 of the guarded clustering;
 - baselines: exact normalized-key matching and logistic regression trained on 1% labeled pairs;
 - EM recovery: |fitted m(exact) - analytic m(exact)| per field, for the default training-block
-  estimator and for EM on the candidate pairs;
+  estimator and for EM on the candidate pairs, plus the largest error of the fitted m and u over
+  *every* agreement level against the empirical distributions of the labelled candidate pairs;
 - calibration (ECE of match probabilities over candidate pairs);
 - twin and household false-merge rates (with the review rules, and for twins also without
   them, to show what the ``possible_twin`` rule buys) and per-name-origin-group pairwise scores;
@@ -29,11 +30,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 from probabilistic_record_linkage.linkage.analytic import analytic_exact_agreement
 from probabilistic_record_linkage.linkage.baselines import LogisticLinkage, exact_key_labels
 from probabilistic_record_linkage.linkage.blocking import pair_completeness, reduction_ratio
 from probabilistic_record_linkage.linkage.clustering import connected_labels
+from probabilistic_record_linkage.linkage.comparison import random_pairs
 from probabilistic_record_linkage.linkage.demo import entity_pairs
 from probabilistic_record_linkage.linkage.evaluation import (
     bcubed_scores,
@@ -63,6 +66,61 @@ def machine() -> dict[str, Any]:
 
 def _round(value: float, digits: int = 4) -> float:
     return round(float(value), digits)
+
+
+def _empirical(levels: npt.NDArray[np.int8], mask: npt.NDArray[np.bool_], n_levels: int) -> Any:
+    """Share of each agreement level among ``mask`` pairs where the field is present.
+
+    This is what the EM M step estimates (``m_f(l) = sum_{gamma_f = l} n g / sum_{gamma_f > 0} n
+    g``), so the fitted vectors can be compared level by level rather than at the exact level
+    only. Index 0 (missing) is unused, as in ``FSParams``.
+    """
+    selected = levels[mask]
+    counts = np.bincount(selected[selected > 0], minlength=n_levels).astype(np.float64)
+    total = counts.sum()
+    return counts / total if total > 0 else counts
+
+
+def _level_errors(
+    run: Any, truth: npt.NDArray[np.int64], is_match: npt.NDArray[np.bool_], seed: int
+) -> dict[str, Any]:
+    """Max |fitted - empirical| over *every* level, against the labelled pairs each vector models.
+
+    ``m`` is the level distribution of matching pairs, estimated by EM on training blocks, so it
+    is compared with the labelled matching candidate pairs. ``u`` is the level distribution of
+    *random* pairs (ADR 0002), so it is compared with labelled non-matching random pairs. The
+    same comparison against the non-matching *candidate* pairs is reported too, but it is a
+    measure of how selective blocking is, not an error: candidate pairs agree somewhere by
+    construction, which is exactly why ``u`` is not estimated from them.
+    """
+    space = run.comparator.space
+    params = run.model.params
+    levels = run.scored.levels
+    rng = np.random.default_rng([seed, 4242])
+    left, right = random_pairs(run.n_records, min(200_000, run.n_records * 10), rng)
+    random_levels = run.comparator.levels(left, right)
+    random_non_match = truth[left] != truth[right]
+    per_field: dict[str, dict[str, float]] = {}
+    for f, spec in enumerate(space.fields):
+        m_hat = _empirical(levels[:, f], is_match, spec.n_levels)
+        u_hat = _empirical(random_levels[:, f], random_non_match, spec.n_levels)
+        u_candidates = _empirical(levels[:, f], ~is_match, spec.n_levels)
+        per_field[spec.name] = {
+            "m": _round(float(np.max(np.abs(np.asarray(params.m[f])[1:] - m_hat[1:])))),
+            "u": _round(float(np.max(np.abs(np.asarray(params.u[f])[1:] - u_hat[1:])))),
+            "u_vs_candidate_pairs": _round(
+                float(np.max(np.abs(np.asarray(params.u[f])[1:] - u_candidates[1:])))
+            ),
+        }
+    return {
+        "m_max_abs_error": max(v["m"] for v in per_field.values()),
+        "u_max_abs_error": max(v["u"] for v in per_field.values()),
+        "u_max_abs_error_vs_candidate_pairs": max(
+            v["u_vs_candidate_pairs"] for v in per_field.values()
+        ),
+        "random_pairs": int(left.size),
+        "per_field": per_field,
+    }
 
 
 def measure(records: int, seed: int) -> dict[str, Any]:
@@ -101,6 +159,8 @@ def measure(records: int, seed: int) -> dict[str, Any]:
         )
         for f, spec in enumerate(space.fields)
     }
+
+    all_levels = _level_errors(run, truth, is_match, seed)
 
     records_prepared = prepare_records(normalize_sources(dataset.sources), dataset.world.nicknames)
     exact = pairwise_scores(exact_key_labels(records_prepared), truth)
@@ -160,6 +220,7 @@ def measure(records: int, seed: int) -> dict[str, Any]:
             "candidates_max_abs_error": max(per_field_candidates.values()),
             "training_blocks": per_field,
             "candidates": per_field_candidates,
+            "all_levels_vs_empirical": all_levels,
         },
         "hard_negatives": {
             "twin_pairs": len(twins),
@@ -227,6 +288,8 @@ def print_tables(results: dict[str, Any]) -> None:
         ("logistic regression (1% labels) F1", base["logistic_1pct_f1"]),
         ("EM max abs m error (training blocks)", em["training_blocks_max_abs_error"]),
         ("EM max abs m error (EM on candidates)", em["candidates_max_abs_error"]),
+        ("EM max abs m error over all levels", em["all_levels_vs_empirical"]["m_max_abs_error"]),
+        ("EM max abs u error over all levels", em["all_levels_vs_empirical"]["u_max_abs_error"]),
         ("twin false-merge rate", results["hard_negatives"]["twin_merge_rate"]),
         (
             "twin false-merge rate without review rules",

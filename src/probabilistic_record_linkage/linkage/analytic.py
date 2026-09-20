@@ -14,9 +14,12 @@ sloppiness mixture ``{(pi_a, a)}`` the state probabilities of one record are ave
 - address (street and postcode): the entity shows its primary or its alternative address
 
 Entity-level terms (nickname count, swappable date) are averaged with weight ``k (k - 1) / 2``,
-the number of within-entity record pairs. EM is fitted on *candidate* pairs, so blocking that
-misses a few heavily corrupted matches biases the fitted values slightly upward; the benchmark
-reports the gap (target within 0.03).
+the number of within-entity record pairs. These values describe *all* matching pairs, while EM is
+fitted on blocks of likely matches by default (``EMConfig(strategy="training_blocks")``) or on the
+candidate pairs, both of which miss a few heavily corrupted matches and so bias the fitted values
+slightly upward; ``bench/bench_linkage.py`` reports the gap for both estimators (target within
+0.03), next to the error of the fitted ``m`` and ``u`` over every level against the empirical
+distributions of the labelled candidate pairs.
 """
 
 from __future__ import annotations
