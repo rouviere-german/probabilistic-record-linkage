@@ -16,7 +16,8 @@ Sections:
   the guard's F1 cost on clean data;
 - drift: comparison-pattern PSI of a new source with the same corruption versus 3x corruption;
 - privacy mode: F1 of plaintext, plain Bloom-filter and hardened Bloom-filter linkage on the same
-  records, and the frequency-alignment attack on the top 100 first-name encodings.
+  records, and every implemented attack (frequency alignment in three strategies, graph
+  matching) on the top 100 first-name encodings.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from probabilistic_record_linkage.linkage.attack import frequency_alignment_attack
+from probabilistic_record_linkage.linkage.attack import all_attacks
 from probabilistic_record_linkage.linkage.clustering import ClusterConfig
 from probabilistic_record_linkage.linkage.corruption import CorruptionConfig
 from probabilistic_record_linkage.linkage.evaluation import (
@@ -248,7 +249,8 @@ def privacy(records: int, seed: int) -> dict[str, Any]:
         encode_seconds = time.perf_counter() - start
         run = link_encoded(encoded, normalized["source"].to_list())
         f1 = pairwise_scores(run.resolution.labels, truth).f1
-        attacks = frequency_alignment_attack(
+        start = time.perf_counter()
+        attacks = all_attacks(
             encoded.fields["first_name"],
             encoded.present["first_name"],
             normalized["first_name"].to_list(),
@@ -263,6 +265,7 @@ def privacy(records: int, seed: int) -> dict[str, Any]:
             "f1": _r(f1),
             "f1_drop_pp": _r(100 * (plaintext_f1 - f1), 2),
             "encode_seconds": _r(encode_seconds, 2),
+            "attack_seconds": _r(time.perf_counter() - start, 2),
             "attack_top100": {attack.strategy: _r(attack.rate) for attack in attacks},
             "worst_attack_rate": _r(max(attack.rate for attack in attacks)),
         }

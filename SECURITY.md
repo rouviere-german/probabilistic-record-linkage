@@ -20,7 +20,10 @@ Credit is given in the fix commit unless you ask otherwise.
 ## Scope
 
 In scope: the code in this repository, its container image and its CI configuration, including
-the privacy-mode encodings and the frequency-attack test that gates their defaults.
+the privacy-mode encodings and the attacks (frequency alignment, graph matching) that gate their
+defaults. `PrivacyConfig.plain()` and `private-link --plain` deliberately turn hardening off so
+the benchmark can measure what it buys; unhardened encodings are re-identifiable by design and are
+not a finding.
 Out of scope: denial of service by traffic volume, findings that need a compromised host, attacks
 that require the shared Bloom-filter key, and issues in third-party dependencies that are already
 publicly tracked (please report those upstream).

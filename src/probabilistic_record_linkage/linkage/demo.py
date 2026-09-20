@@ -7,8 +7,8 @@
 3. Register the model with its reproducibility manifest and check readiness.
 4. Find a twin pair that the ``possible_twin`` review rule routed to review, and resolve it with
    the CLI (``review decide``); verify the audit chain.
-5. Privacy mode: keyed Bloom-filter linkage with plain and hardened encodings, and the
-   frequency-alignment attack against both.
+5. Privacy mode: keyed Bloom-filter linkage with plain and hardened encodings, and every
+   implemented attack (frequency alignment, graph matching) against both.
 6. Drift: comparison-pattern PSI of a new source with the same corruption versus a source with
    three times the corruption rates.
 """
@@ -26,7 +26,7 @@ import numpy as np
 from pydantic import JsonValue
 
 from probabilistic_record_linkage.linkage.analytic import analytic_exact_agreement
-from probabilistic_record_linkage.linkage.attack import frequency_alignment_attack
+from probabilistic_record_linkage.linkage.attack import all_attacks
 from probabilistic_record_linkage.linkage.audit import VerifyResult
 from probabilistic_record_linkage.linkage.blocking import pair_completeness, reduction_ratio
 from probabilistic_record_linkage.linkage.evaluation import (
@@ -209,7 +209,7 @@ def _privacy_report(
         encoded = encode_records(normalized, key, config)
         private_run = link_encoded(encoded, normalized["source"].to_list())
         scores = pairwise_scores(private_run.resolution.labels, truth)
-        attacks = frequency_alignment_attack(
+        attacks = all_attacks(
             encoded.fields["first_name"],
             encoded.present["first_name"],
             normalized["first_name"].to_list(),

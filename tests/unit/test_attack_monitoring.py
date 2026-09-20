@@ -9,7 +9,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 from prometheus_client import generate_latest
 
-from probabilistic_record_linkage.linkage.attack import frequency_alignment_attack, qgram_count
+from probabilistic_record_linkage.linkage import attack
+from probabilistic_record_linkage.linkage.attack import (
+    all_attacks,
+    frequency_alignment_attack,
+    graph_matching_attack,
+    qgram_count,
+    qgrams,
+)
 from probabilistic_record_linkage.linkage.comparison import PLAIN_SPACE
 from probabilistic_record_linkage.linkage.monitoring import (
     DriftStateError,
@@ -17,6 +24,7 @@ from probabilistic_record_linkage.linkage.monitoring import (
     categorical_psi,
     create_linkage_metrics,
 )
+from probabilistic_record_linkage.linkage.vocab import World
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +115,100 @@ def test_attack_edge_cases() -> None:
     )
     assert [(r.strategy, r.attacked, r.rate) for r in empty] == [("global", 0, 0.0)]
     assert qgram_count("ann", q=1) == 2
+    nothing = graph_matching_attack(
+        np.zeros((2, 1), dtype=np.uint64),
+        np.zeros(2, dtype=bool),
+        [None, None],
+        {"a": 1.0},
+        bits=64,
+        hashes=1,
+    )
+    assert (nothing.strategy, nothing.attacked, nothing.rate) == ("graph_matching", 0, 0.0)
+    # One candidate name and one distinct encoding leave the graph with no structure at all.
+    single = graph_matching_attack(
+        np.ones((2, 1), dtype=np.uint64),
+        np.ones(2, dtype=bool),
+        ["a", "a"],
+        {"a": 1.0},
+        bits=64,
+        hashes=1,
+    )
+    assert (single.strategy, single.attacked, single.correct) == ("graph_matching", 1, 0)
+    assert attack._standardized(np.ones((3, 3))).tolist() == [[0.0] * 3] * 3
+    assert attack._standardized(np.zeros((1, 1))).tolist() == [[0.0]]
+    assert attack._sinkhorn(np.zeros((2, 2))).tolist() == [[0.25, 0.25], [0.25, 0.25]]
+    assert attack._estimated_qgrams(0, 64, 2) == 0
+    assert attack._estimated_qgrams(64, 64, 2) == 10**6
+    # Graduated assignment falls back to the prior when the graphs carry nothing: either the
+    # agreement is flat, or the prior rules out every pair the agreement prefers.
+    swap = np.asarray([[0.0, 1.0], [1.0, 0.0]])
+    flat = attack._graduated_assignment(swap, np.zeros((2, 2)), np.full((2, 2), 0.25), 3)
+    assert flat.tolist() in ([0, 1], [1, 0])
+    blocked = attack._graduated_assignment(swap, swap, np.asarray([[1.0, 0.0], [0.0, 0.0]]), 3)
+    assert blocked.tolist() == [0, 1]
+
+
+class _SimulatedBloom:
+    """A keyless stand-in for the encoder: every (q-gram, salt) gets ``hashes`` random positions."""
+
+    def __init__(self, bits: int, hashes: int, seed: int) -> None:
+        self.bits, self.hashes = bits, hashes
+        self.rng = np.random.default_rng(seed)
+        self.positions: dict[tuple[str, str], npt.NDArray[np.int64]] = {}
+
+    def positions_of(self, gram: str, salt: str = "") -> npt.NDArray[np.int64]:
+        key = (gram, salt)
+        if key not in self.positions:
+            self.positions[key] = self.rng.integers(0, self.bits, size=self.hashes)
+        return self.positions[key]
+
+    def encode(self, names: list[str], salts: list[str]) -> npt.NDArray[np.uint64]:
+        rows = np.zeros((len(names), self.bits // 64), dtype=np.uint64)
+        for row, (name, salt) in enumerate(zip(names, salts, strict=True)):
+            vector = np.zeros(self.bits, dtype=bool)
+            for gram in qgrams(name, 2):
+                vector[self.positions_of(gram, salt)] = True
+            rows[row] = np.frombuffer(np.packbits(vector).tobytes(), dtype=">u8").astype(np.uint64)
+        return rows
+
+
+def test_unpacking_follows_the_encoder_bit_order() -> None:
+    vector = np.zeros(128, dtype=bool)
+    vector[[0, 7, 8, 63, 64, 127]] = True
+    packed = np.frombuffer(np.packbits(vector).tobytes(), dtype=">u8").astype(np.uint64)
+    unpacked = attack._unpack(packed.reshape(1, -1), 128)
+    assert np.array_equal(unpacked[0], vector)
+    assert attack._unpack(packed.reshape(1, -1), 70).shape == (1, 70)
+
+
+def test_graph_matching_beats_frequency_alignment_on_unsalted_encodings(world: World) -> None:
+    public = world.first_name_frequencies()
+    names = sorted(public)
+    probabilities = np.asarray([public[name] for name in names])
+    rng = np.random.default_rng(3)
+    plaintext = [
+        names[i] for i in rng.choice(len(names), size=8_000, p=probabilities / probabilities.sum())
+    ]
+    bloom = _SimulatedBloom(bits=512, hashes=12, seed=5)
+    present = np.ones(len(plaintext), dtype=bool)
+
+    unsalted = bloom.encode(plaintext, [""] * len(plaintext))
+    reports = all_attacks(unsalted, present, plaintext, public, bits=512, hashes=12)
+    assert [report.strategy for report in reports] == ["global", "length", "graph_matching"]
+    by_strategy = {report.strategy: report.rate for report in reports}
+    assert by_strategy["graph_matching"] >= 0.3
+    # The similarity graph carries far more than the frequency ranking and the length strata.
+    assert by_strategy["graph_matching"] >= 2 * max(by_strategy["global"], by_strategy["length"])
+    report = graph_matching_attack(unsalted, present, plaintext, public, bits=512, hashes=12)
+    assert (report.strategy, report.attacked) == ("graph_matching", 100)
+    assert report.correct == reports[-1].correct
+
+    # A per-record salt makes every encoding unique and its similarities meaningless: the graph
+    # carries no name structure and the attacker is left with the prior.
+    salted = bloom.encode(plaintext, [str(i) for i in range(len(plaintext))])
+    assert graph_matching_attack(salted, present, plaintext, public, bits=512, hashes=12).rate <= (
+        0.05
+    )
 
 
 @given(st.lists(st.integers(1, 50), min_size=2, max_size=10))

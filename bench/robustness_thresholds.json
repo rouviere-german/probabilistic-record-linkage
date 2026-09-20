@@ -2,7 +2,8 @@
   "min": {
     "corruption_sweep.1.f1": 0.95,
     "over_merge_guard.max_real_entities_committed_without_guard": 3,
-    "drift.shifted_3x_psi": 0.2
+    "drift.shifted_3x_psi": 0.2,
+    "privacy.plain_bloom.attack_top100.graph_matching": 0.5
   },
   "max": {
     "over_merge_guard.max_real_entities_committed_with_guard": 2,
