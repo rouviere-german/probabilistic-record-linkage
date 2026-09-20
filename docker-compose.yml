@@ -3,7 +3,9 @@
 # Before `docker compose up --build`:
 #   mkdir -p secrets && python -c "import secrets; print(secrets.token_hex(32))" > secrets/pprl.key
 #   chmod 600 secrets/pprl.key
-# and export APP_JWT_SECRET / APP_ID_HASH_KEY (at least 32 characters each) in your shell or .env.
+# APP_JWT_SECRET and APP_ID_HASH_KEY (at least 32 characters each) are optional: export them in
+# your shell or .env to enable them. Left unset, every /v1 route answers 401 and the log/trace
+# pseudonyms are drawn from a random per-process key, so they change on every restart.
 services:
   app:
     build:
@@ -12,15 +14,19 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      APP_ENVIRONMENT: prod
-      APP_LOG_LEVEL: INFO
-      APP_DATA_DIR: /data
+      # List form on purpose: a bare name is passed through only when it is set in the shell or
+      # .env, and dropped otherwise. `NAME: ${NAME:-}` would instead inject an empty string, and
+      # the settings validator rejects "" as a secret shorter than 32 characters, so the container
+      # would fail to start unless every optional secret were exported.
+      - APP_ENVIRONMENT=prod
+      - APP_LOG_LEVEL=INFO
+      - APP_DATA_DIR=/data
+      - APP_PPRL_KEY_FILE=/run/secrets/pprl_key
       # Comma-separated SHA-256 digests of operator keys (protects /metrics).
-      APP_API_KEY_SHA256: ${APP_API_KEY_SHA256:-}
+      - APP_API_KEY_SHA256
       # Scoped JWTs are verified with this secret; without it every /v1 route answers 401.
-      APP_JWT_SECRET: ${APP_JWT_SECRET:-}
-      APP_ID_HASH_KEY: ${APP_ID_HASH_KEY:-}
-      APP_PPRL_KEY_FILE: /run/secrets/pprl_key
+      - APP_JWT_SECRET
+      - APP_ID_HASH_KEY
     secrets:
       - pprl_key
     volumes:

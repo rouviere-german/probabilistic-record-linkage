@@ -145,8 +145,10 @@ when there is none. Every `{job_id}` route answers 404 to any other owner, so a 
 service account and its reviewers share a tenant while other tenants cannot see the job.
 
 `docker compose up --build` runs the non-root, read-only image with a data volume and the privacy
-key as a mounted secret (see the comments in `docker-compose.yml`). The image build, smoke test,
-trivy scan and SBOM run in CI (job `docker`); containers were not run while building this repo.
+key as a mounted secret (see the comments in `docker-compose.yml`). The image was built and
+smoke-tested locally on 2026-09-20 with Docker 29.6.1: it runs as uid 10001 on a read-only root
+filesystem with `cap_drop: ALL`, and its `HEALTHCHECK` (`/healthz`) reports `healthy`. hadolint,
+the trivy scan and the syft SBOM run only in CI (job `docker`).
 
 ## Results
 
