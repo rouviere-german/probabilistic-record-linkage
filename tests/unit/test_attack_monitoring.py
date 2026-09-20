@@ -16,6 +16,7 @@ from probabilistic_record_linkage.linkage.attack import (
     graph_matching_attack,
     qgram_count,
     qgrams,
+    similarity_correlation,
 )
 from probabilistic_record_linkage.linkage.comparison import PLAIN_SPACE
 from probabilistic_record_linkage.linkage.monitoring import (
@@ -203,11 +204,21 @@ def test_graph_matching_beats_frequency_alignment_on_unsalted_encodings(world: W
     assert (report.strategy, report.attacked) == ("graph_matching", 100)
     assert report.correct == reports[-1].correct
 
+    # The attack runs on the correlation between filter similarity and name similarity.
+    assert similarity_correlation(unsalted, present, plaintext, bits=512) >= 0.8
+
     # A per-record salt makes every encoding unique and its similarities meaningless: the graph
     # carries no name structure and the attacker is left with the prior.
     salted = bloom.encode(plaintext, [str(i) for i in range(len(plaintext))])
     assert graph_matching_attack(salted, present, plaintext, public, bits=512, hashes=12).rate <= (
         0.05
+    )
+    assert abs(similarity_correlation(salted, present, plaintext, bits=512)) <= 0.1
+    assert (
+        similarity_correlation(
+            np.ones((2, 1), dtype=np.uint64), np.ones(2, bool), ["a", "a"], bits=64
+        )
+        == 0.0
     )
 
 

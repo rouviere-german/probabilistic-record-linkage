@@ -91,7 +91,8 @@ Changes:
   graduated assignment of Gold and Rangarajan 1996) was added in `linkage/attack.py` and runs in
   every benchmark, demo and gate. It exploits the fact that without hardening the Dice similarity
   of two filters tracks the Dice similarity of the two names' q-gram sets: Pearson 0.87 between
-  the two matrices on the benchmark records, against 0.01 after hardening.
+  the two matrices on the benchmark records (0.868, reported as `similarity_correlation` by
+  `bench/bench_robustness.py`), against 0.006 after hardening.
 - Measured on the 50,206 benchmark records: it names 77 of the 100 most frequent unhardened
   encodings (the best frequency alignment gets 20) and 0 of the hardened ones. The gate's floor for
   the unhardened case is 0.5 and `bench/robustness_thresholds.json` holds a matching minimum, so

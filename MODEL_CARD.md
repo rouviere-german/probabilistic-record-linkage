@@ -116,11 +116,11 @@ far more; re-measure per group before deployment.
 
 Keyed Bloom-filter encodings, 50,206 records (`bench/bench_robustness.py`):
 
-| Encoding | F1 | Drop vs plaintext (0.9925) | Best frequency alignment | Graph matching | Worst |
-|---|---:|---:|---:|---:|---:|
-| Unhardened | 0.9764 | 1.61 pp | 0.20 | 0.77 | 0.77 |
-| Hardened, birth-year salt (default) | 0.9666 | 2.59 pp | 0.10 | 0.00 | 0.10 |
-| Hardened, birth-year + month salt | 0.9473 | 4.52 pp | 0.01 | 0.00 | 0.01 |
+| Encoding | F1 | Drop vs plaintext (0.9925) | Best frequency alignment | Graph matching | Worst | Filter-name similarity correlation |
+|---|---:|---:|---:|---:|---:|---:|
+| Unhardened | 0.9764 | 1.61 pp | 0.20 | 0.77 | 0.77 | 0.868 |
+| Hardened, birth-year salt (default) | 0.9666 | 2.59 pp | 0.10 | 0.00 | 0.10 | 0.006 |
+| Hardened, birth-year + month salt | 0.9473 | 4.52 pp | 0.01 | 0.00 | 0.01 | -0.037 |
 
 Recovery is the share of the 100 most frequent first-name encodings whose plaintext an attacker
 names. No setting meets both targets of at most 3 points F1 loss and at most 5% recovery at this

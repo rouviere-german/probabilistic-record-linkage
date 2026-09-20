@@ -61,6 +61,7 @@ __all__ = [
     "graph_matching_attack",
     "qgram_count",
     "qgrams",
+    "similarity_correlation",
 ]
 
 UInt64Array = npt.NDArray[np.uint64]
@@ -380,6 +381,35 @@ def graph_matching_attack(
         for encoding, name in zip(chosen.tolist(), assignment.tolist(), strict=True)
     }
     return _score("graph_matching", top_k, found, guesses)
+
+
+def similarity_correlation(
+    packed: UInt64Array,
+    present: BoolArray,
+    plaintext: Sequence[str | None],
+    *,
+    bits: int,
+    q: int = 2,
+    nodes: int = 300,
+) -> float:
+    """Pearson correlation of filter Dice with q-gram Dice over the most frequent encodings.
+
+    This is the premise :func:`graph_matching_attack` runs on, measured directly. It uses the
+    plaintext, so it is a diagnostic for the defender rather than something an attacker computes:
+    a correlation near zero means the similarity graph carries no name structure to match.
+    """
+    found = _targets(packed, present, plaintext, nodes)
+    if found is None or found.order.size < 3:
+        return 0.0
+    chosen = found.order[: min(nodes, found.order.size)]
+    names = [found.truth.get(int(g)) or "" for g in chosen.tolist()]
+    filters = _bit_dice(_unpack(found.distinct, bits)[chosen])
+    grams = _qgram_dice(names, q)
+    off = ~np.eye(chosen.size, dtype=bool)
+    left, right = filters[off], grams[off]
+    if left.std() <= 0.0 or right.std() <= 0.0:
+        return 0.0
+    return float(np.corrcoef(left, right)[0, 1])
 
 
 def all_attacks(

@@ -93,8 +93,9 @@
     "plain_bloom": {
       "f1": 0.9764,
       "f1_drop_pp": 1.61,
-      "encode_seconds": 2.68,
-      "attack_seconds": 0.56,
+      "encode_seconds": 2.66,
+      "attack_seconds": 0.43,
+      "similarity_correlation": 0.868,
       "attack_top100": {
         "global": 0.03,
         "length": 0.2,
@@ -106,8 +107,9 @@
     "hardened": {
       "f1": 0.9666,
       "f1_drop_pp": 2.59,
-      "encode_seconds": 5.27,
-      "attack_seconds": 0.66,
+      "encode_seconds": 4.74,
+      "attack_seconds": 0.54,
+      "similarity_correlation": 0.006,
       "attack_top100": {
         "global": 0.0,
         "length": 0.0,
@@ -119,8 +121,9 @@
     "hardened_year_month": {
       "f1": 0.9473,
       "f1_drop_pp": 4.52,
-      "encode_seconds": 8.77,
-      "attack_seconds": 0.56,
+      "encode_seconds": 7.9,
+      "attack_seconds": 0.61,
+      "similarity_correlation": -0.037,
       "attack_top100": {
         "global": 0.01,
         "length": 0.0,
@@ -130,5 +133,5 @@
       "worst_attack_rate": 0.01
     }
   },
-  "seconds": 51.5
+  "seconds": 47.5
 }

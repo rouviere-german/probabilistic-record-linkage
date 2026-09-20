@@ -201,7 +201,7 @@ and it is why `u` is not estimated from candidate pairs.
 ### Robustness, guard, drift and privacy
 
 Command: `uv run python bench/bench_robustness.py --check` (20,000 records; privacy section on
-50,206 records; 51.5 s; CI job `robustness`).
+50,206 records; 47.5 s; CI job `robustness`).
 
 | Corruption rates scaled by | 0.5 | 1.0 | 1.5 | 2.0 |
 |---|---:|---:|---:|---:|
@@ -254,16 +254,18 @@ frequent first-name encodings and the worst one is reported: three frequency-ali
 (global, length-stratified, salt-aware) and a graph-matching attack that matches the similarity
 graph of the encodings to the similarity graph of the public name list.
 
-| Encoding | F1 | F1 drop | Best frequency alignment | Graph matching | Worst |
-|---|---:|---:|---:|---:|---:|
-| Keyed Bloom filters, unhardened | 0.9764 | 1.61 pp | 0.20 | **0.77** | 0.77 |
-| Hardened, birth-year salt (default) | 0.9666 | 2.59 pp | 0.10 | 0.00 | 0.10 |
-| Hardened, birth-year + birth-month salt | 0.9473 | 4.52 pp | 0.01 | 0.00 | 0.01 |
+| Encoding | F1 | F1 drop | Best frequency alignment | Graph matching | Worst | Filter-name similarity correlation |
+|---|---:|---:|---:|---:|---:|---:|
+| Keyed Bloom filters, unhardened | 0.9764 | 1.61 pp | 0.20 | **0.77** | 0.77 | 0.868 |
+| Hardened, birth-year salt (default) | 0.9666 | 2.59 pp | 0.10 | 0.00 | 0.10 | 0.006 |
+| Hardened, birth-year + birth-month salt | 0.9473 | 4.52 pp | 0.01 | 0.00 | 0.01 | -0.037 |
 
 Unhardened keyed Bloom filters are not private: the graph-matching attack names 77 of the 100 most
-frequent encodings, because filter similarity tracks name similarity almost exactly (Pearson 0.87
-between the two Dice matrices at this scale). Hardening breaks that correlation (0.01) and the same
-attack recovers nothing; what is left is the salt-aware frequency alignment at 10%.
+frequent encodings, because filter similarity tracks name similarity almost exactly. The last
+column is that premise measured directly (`linkage.attack.similarity_correlation`): the Pearson
+correlation between the Dice matrix of the 300 most frequent encodings and the Dice matrix of their
+true names' q-gram sets. Hardening drives it to zero and the same attack then recovers nothing;
+what is left is the salt-aware frequency alignment at 10%.
 
 The specification asked for an F1 drop of at most 3 pp *and* recovery of at most 5%. No measured
 setting meets both. The default meets the F1 target and cuts the worst attack from 77% to 10%; the

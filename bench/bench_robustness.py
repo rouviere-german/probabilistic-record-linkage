@@ -16,8 +16,9 @@ Sections:
   the guard's F1 cost on clean data;
 - drift: comparison-pattern PSI of a new source with the same corruption versus 3x corruption;
 - privacy mode: F1 of plaintext, plain Bloom-filter and hardened Bloom-filter linkage on the same
-  records, and every implemented attack (frequency alignment in three strategies, graph
-  matching) on the top 100 first-name encodings.
+  records, every implemented attack (frequency alignment in three strategies, graph matching) on
+  the top 100 first-name encodings, and the correlation between filter similarity and name
+  similarity that the graph-matching attack runs on.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from probabilistic_record_linkage.linkage.attack import all_attacks
+from probabilistic_record_linkage.linkage.attack import all_attacks, similarity_correlation
 from probabilistic_record_linkage.linkage.clustering import ClusterConfig
 from probabilistic_record_linkage.linkage.corruption import CorruptionConfig
 from probabilistic_record_linkage.linkage.evaluation import (
@@ -266,6 +267,18 @@ def privacy(records: int, seed: int) -> dict[str, Any]:
             "f1_drop_pp": _r(100 * (plaintext_f1 - f1), 2),
             "encode_seconds": _r(encode_seconds, 2),
             "attack_seconds": _r(time.perf_counter() - start, 2),
+            # The premise of the graph-matching attack, measured with the plaintext: how well
+            # filter similarity tracks name similarity over the 300 most frequent encodings.
+            "similarity_correlation": _r(
+                similarity_correlation(
+                    encoded.fields["first_name"],
+                    encoded.present["first_name"],
+                    normalized["first_name"].to_list(),
+                    bits=encoded.bits["first_name"],
+                    q=config.q,
+                ),
+                3,
+            ),
             "attack_top100": {attack.strategy: _r(attack.rate) for attack in attacks},
             "worst_attack_rate": _r(max(attack.rate for attack in attacks)),
         }
