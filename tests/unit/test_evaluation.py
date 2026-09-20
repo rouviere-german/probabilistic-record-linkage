@@ -6,6 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from probabilistic_record_linkage.linkage.evaluation import (
+    band_calibration,
     bcubed_scores,
     expected_calibration_error,
     group_pairwise_scores,
@@ -82,6 +83,40 @@ def test_expected_calibration_error_known_values() -> None:
         expected_calibration_error(probabilities, labels[:2])
     with pytest.raises(ValueError, match="bins"):
         expected_calibration_error(probabilities, labels, bins=0)
+
+
+def test_band_calibration_isolates_the_pairs_the_aggregate_hides() -> None:
+    # 98 clear non-matches the model is right about, and 4 uncertain pairs it is not.
+    probabilities = np.asarray([0.0] * 98 + [0.4, 0.4, 0.8, 0.8], dtype=np.float64)
+    labels = np.asarray([False] * 98 + [False, False, False, True], dtype=np.bool_)
+    overall = band_calibration(probabilities, labels)
+    uncertain = band_calibration(probabilities, labels, low=0.01, high=0.99)
+    assert overall.pairs == 102
+    assert overall.share == 1.0
+    assert uncertain.pairs == 4
+    assert uncertain.share == pytest.approx(4 / 102)
+    # The aggregate ECE divides the same gaps by every pair, so it looks 25 times better.
+    assert overall.ece == pytest.approx(uncertain.ece * 4 / 102)
+    assert uncertain.expected_fdr == pytest.approx(0.4)  # 1 - mean(0.4, 0.4, 0.8, 0.8)
+    assert uncertain.observed_fdr == pytest.approx(0.75)
+    assert uncertain.fdr_gap == pytest.approx(0.35)
+    match_band = band_calibration(probabilities, labels, low=0.8)
+    assert match_band.pairs == 2
+    assert match_band.observed_fdr == pytest.approx(0.5)
+    assert match_band.as_dict() == {
+        "pairs": 2,
+        "share": round(2 / 102, 6),
+        "ece": 0.3,
+        "expected_fdr": 0.2,
+        "observed_fdr": 0.5,
+        "fdr_gap": 0.3,
+    }
+    empty = band_calibration(probabilities, labels, low=0.95)
+    assert (empty.pairs, empty.ece, empty.fdr_gap) == (0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="same shape"):
+        band_calibration(probabilities, labels[:2])
+    with pytest.raises(ValueError, match="band"):
+        band_calibration(probabilities, labels, low=0.9, high=0.1)
 
 
 def test_merge_rates_and_entities_per_cluster() -> None:

@@ -8,7 +8,9 @@ Sections:
 
 - corruption sweep: pairwise F1 with every corruption rate scaled by 0.5, 1, 1.5 and 2;
 - calibration: ECE of match probabilities with independent corruption versus correlated
-  corruption (same marginal rates, errors concentrated in 10% "sloppy" records);
+  corruption (same marginal rates, errors concentrated in 10% "sloppy" records), over all
+  candidate pairs and restricted to the uncertain band (0.01 <= p <= 0.99) and the match band,
+  where the expected and the observed false-discovery rate are compared;
 - over-merge guard: adversarial bridge chains between household members; the largest number of
   true identities in any cluster that contains a bridge record, with and without the guard, plus
   the guard's F1 cost on clean data;
@@ -36,6 +38,7 @@ from probabilistic_record_linkage.linkage.attack import frequency_alignment_atta
 from probabilistic_record_linkage.linkage.clustering import ClusterConfig
 from probabilistic_record_linkage.linkage.corruption import CorruptionConfig
 from probabilistic_record_linkage.linkage.evaluation import (
+    band_calibration,
     expected_calibration_error,
     max_entities_per_cluster,
     pairwise_scores,
@@ -90,9 +93,16 @@ def corruption_sweep(records: int, seed: int) -> list[dict[str, float]]:
     return rows
 
 
-def calibration(records: int, seed: int) -> dict[str, float]:
+def calibration(records: int, seed: int) -> dict[str, Any]:
+    """ECE over all candidate pairs, and the two bands where calibration actually costs something.
+
+    Over all candidate pairs the ECE is dominated by the clear non-matches, so it barely moves
+    when conditional independence breaks. The ``uncertain`` band (0.01 <= p <= 0.99) and the
+    ``match`` band (p >= the selected match threshold, where the gap between the expected and the
+    observed false-discovery rate is what a user pays) are reported next to it.
+    """
     world = build_world(seed)
-    result: dict[str, float] = {}
+    result: dict[str, Any] = {}
     for label, corruption in (
         ("independent", CorruptionConfig()),
         ("correlated", CorruptionConfig().correlated(0.1, 5.0)),
@@ -103,8 +113,15 @@ def calibration(records: int, seed: int) -> dict[str, float]:
         run = link_sources(dataset.sources, nicknames=world.nicknames)
         truth = entity_labels(dataset.truth, list(run.record_ids))
         is_match = truth[run.blocking.left] == truth[run.blocking.right]
-        result[f"{label}_ece"] = _r(expected_calibration_error(run.scored.probability, is_match), 5)
+        probability = run.scored.probability
+        result[f"{label}_ece"] = _r(expected_calibration_error(probability, is_match), 5)
         result[f"{label}_f1"] = _r(pairwise_scores(run.resolution.labels, truth).f1)
+        result[f"{label}_uncertain"] = band_calibration(
+            probability, is_match, low=0.01, high=0.99
+        ).as_dict()
+        result[f"{label}_match_band"] = band_calibration(
+            probability, is_match, low=run.thresholds.match
+        ).as_dict()
     return result
 
 

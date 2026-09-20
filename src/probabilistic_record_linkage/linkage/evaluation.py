@@ -6,6 +6,12 @@ sparse contingency table, so they cost O(n log n) regardless of cluster sizes.
 - Pairwise precision/recall/F1 over record pairs placed in the same cluster (Christen 2012, ch. 7).
 - B-cubed precision/recall per record, averaged (Bagga and Baldwin 1998).
 - Expected calibration error with equal-width probability bins (Naeini et al. 2015).
+- Calibration restricted to a probability band (:func:`band_calibration`). Over all candidate
+  pairs the ECE is dominated by the overwhelming majority of pairs the model puts near zero, so
+  it stays small even when the uncertain pairs are mis-calibrated. Restricting to the pairs the
+  model is unsure about, and to the pairs it commits to as matches (where the gap between the
+  expected and the observed false-discovery rate is what a user actually pays), shows the
+  conditional-independence trade-off that the aggregate hides.
 """
 
 from __future__ import annotations
@@ -17,7 +23,9 @@ import numpy as np
 import numpy.typing as npt
 
 __all__ = [
+    "BandCalibration",
     "PairScores",
+    "band_calibration",
     "bcubed_scores",
     "contingency",
     "expected_calibration_error",
@@ -114,6 +122,59 @@ def expected_calibration_error(
     present = counts > 0
     gap = np.abs(accuracy[present] - confidence[present])
     return float(np.sum(gap) / probabilities.size)
+
+
+@dataclass(frozen=True, slots=True)
+class BandCalibration:
+    """Calibration of the pairs whose match probability falls in ``[low, high]``."""
+
+    pairs: int
+    share: float  # of all scored pairs
+    ece: float
+    expected_fdr: float  # mean(1 - p): what the model says the error rate in the band is
+    observed_fdr: float  # 1 - mean(label): what it actually is
+
+    @property
+    def fdr_gap(self) -> float:
+        return self.observed_fdr - self.expected_fdr
+
+    def as_dict(self) -> dict[str, float | int]:
+        return {
+            "pairs": self.pairs,
+            "share": round(self.share, 6),
+            "ece": round(self.ece, 6),
+            "expected_fdr": round(self.expected_fdr, 6),
+            "observed_fdr": round(self.observed_fdr, 6),
+            "fdr_gap": round(self.fdr_gap, 6),
+        }
+
+
+def band_calibration(
+    probabilities: FloatArray,
+    labels: npt.NDArray[np.bool_],
+    *,
+    low: float = 0.0,
+    high: float = 1.0,
+    bins: int = 10,
+) -> BandCalibration:
+    """ECE and expected-versus-observed false-discovery rate inside one probability band."""
+    if probabilities.shape != labels.shape:
+        raise ValueError("probabilities and labels must have the same shape")
+    if not 0.0 <= low <= high <= 1.0:
+        raise ValueError("the band must satisfy 0 <= low <= high <= 1")
+    total = probabilities.size
+    selected = (probabilities >= low) & (probabilities <= high)
+    inside = probabilities[selected]
+    truth = labels[selected]
+    if inside.size == 0:
+        return BandCalibration(0, 0.0, 0.0, 0.0, 0.0)
+    return BandCalibration(
+        pairs=int(inside.size),
+        share=inside.size / total,
+        ece=expected_calibration_error(inside, truth, bins=bins),
+        expected_fdr=float(np.mean(1.0 - inside)),
+        observed_fdr=1.0 - float(np.mean(truth.astype(np.float64))),
+    )
 
 
 def merge_rate(
