@@ -143,6 +143,43 @@ def _link(args: argparse.Namespace) -> int:
         _close(service)
 
 
+def _private_link(args: argparse.Namespace) -> int:
+    """Link a dataset in privacy mode, with the Bloom-filter key from the mounted secret file."""
+    from probabilistic_record_linkage.core.config import get_settings  # noqa: PLC0415
+    from probabilistic_record_linkage.linkage.generator import load_sources  # noqa: PLC0415
+    from probabilistic_record_linkage.linkage.normalize import normalize_sources  # noqa: PLC0415
+    from probabilistic_record_linkage.linkage.pipeline import link_encoded  # noqa: PLC0415
+    from probabilistic_record_linkage.linkage.privacy import (  # noqa: PLC0415
+        InsecureKeyFileError,
+        PrivacyConfig,
+        encode_records,
+        load_key_file,
+    )
+
+    key_file = args.key_file or get_settings().pprl_key_file
+    if key_file is None:
+        print("private-link needs APP_PPRL_KEY_FILE (or --key-file)", file=sys.stderr)
+        return 2
+    try:
+        key = load_key_file(key_file)
+    except InsecureKeyFileError as error:
+        print(f"{key_file}: {error}", file=sys.stderr)
+        return 2
+    normalized = normalize_sources(load_sources(args.data))
+    config = PrivacyConfig.plain() if args.plain else PrivacyConfig()
+    encoded = encode_records(normalized, key, config)
+    run = link_encoded(encoded, normalized["source"].to_list())
+    _print(
+        {
+            "key_file": str(key_file),
+            "hardened": config.hardening.enabled,
+            "encoded_bits": encoded.bits,
+            **run.summary(),
+        }
+    )
+    return 0
+
+
 def _review(args: argparse.Namespace) -> int:
     from probabilistic_record_linkage.linkage.service import JobNotFoundError  # noqa: PLC0415
     from probabilistic_record_linkage.linkage.store import ReviewConflictError  # noqa: PLC0415
@@ -251,6 +288,23 @@ def _parser() -> argparse.ArgumentParser:
     link.add_argument("--register", action="store_true", help="register the model as production")
     link.add_argument("--use-registered-model", action="store_true")
 
+    private = sub.add_parser(
+        "private-link",
+        help="link a generated dataset in privacy mode (keyed Bloom-filter encodings)",
+    )
+    private.add_argument("--data", type=Path, required=True)
+    private.add_argument(
+        "--key-file",
+        type=Path,
+        default=None,
+        help="mounted secret file with the shared Bloom-filter key (default: APP_PPRL_KEY_FILE)",
+    )
+    private.add_argument(
+        "--plain",
+        action="store_true",
+        help="disable hardening (only to measure what hardening buys; see SECURITY.md Scope)",
+    )
+
     review = sub.add_parser("review", help="review queue tools")
     review_sub = review.add_subparsers(dest="review_command", required=True)
     listing = review_sub.add_parser("list", help="list open review items of a job")
@@ -294,6 +348,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "issue-token": _issue_token,
     "generate": _generate,
     "link": _link,
+    "private-link": _private_link,
     "review": _review,
     "entity": _entity,
     "audit": _audit,

@@ -13,6 +13,7 @@ from probabilistic_record_linkage import cli
 from probabilistic_record_linkage.core import tracing
 from probabilistic_record_linkage.core.config import get_settings
 from probabilistic_record_linkage.core.security import JwtVerifier, hash_api_key
+from probabilistic_record_linkage.linkage.demo import write_key_file
 from probabilistic_record_linkage.linkage.generator import load_sources
 
 pytestmark = pytest.mark.integration
@@ -176,3 +177,37 @@ def test_demo_runs_offline_end_to_end(tmp_path: Path, capsys: pytest.CaptureFixt
     privacy = summary["privacy"]
     assert privacy["hardened"]["worst_attack_rate"] <= privacy["plain_bloom"]["worst_attack_rate"]
     assert code == (0 if summary["ok"] else 1)
+
+
+@pytest.mark.usefixtures("restore_logging")
+def test_private_link_reads_the_key_from_the_configured_secret_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Privacy mode is reachable from the CLI, and only with a key file (APP_PPRL_KEY_FILE)."""
+    data = tmp_path / "data"
+    assert cli.main(["generate", "--records", "2000", "--seed", "11", "--out", str(data)]) == 0
+    key_file = tmp_path / "secrets" / "pprl.key"
+    get_settings.cache_clear()
+    try:
+        # No key file configured at all.
+        assert cli.main(["private-link", "--data", str(data)]) == 2
+        # Configured but not mounted.
+        monkeypatch.setenv("APP_PPRL_KEY_FILE", str(key_file))
+        get_settings.cache_clear()
+        assert cli.main(["private-link", "--data", str(data)]) == 2
+        write_key_file(key_file)
+        assert cli.main(["private-link", "--data", str(data)]) == 0
+        hardened = _last(capsys)
+        assert cli.main(["private-link", "--data", str(data), "--plain"]) == 0
+        plain = _last(capsys)
+    finally:
+        get_settings.cache_clear()
+    assert hardened["key_file"] == str(key_file)
+    assert hardened["hardened"] is True
+    assert plain["hardened"] is False
+    assert hardened["mode"] == "privacy"
+    assert hardened["records"] > 1_500
+    assert hardened["candidate_pairs"] > 0
+    assert hardened["clusters"] > 0
+    # Hardening changes the encodings, so the fitted model and its thresholds differ.
+    assert hardened != plain
